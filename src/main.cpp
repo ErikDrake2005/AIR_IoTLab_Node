@@ -3,7 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h" 
-#include "config.h"
+#include "Config.h"
 #include "JsonFormatter.h"
 #include "TimeSync.h"
 #include "RelayController.h"
@@ -28,13 +28,13 @@ UARTCommander uartCommander;
 TimeSync timeSync(jsonFormatter);
 StateMachine stateMachine(measurement, relay, uartCommander, timeSync);
 
-// --- TASK 1: NHẬN LỆNH TỪ UART ---
+// --- TASK 1: NHẬN LỆNH TỪ UART (Ưu tiên cao hơn Logic) ---
 void uartRxTask(void* pvParameters) {
-    // Tăng buffer để chứa trọn vẹn bản tin JSON
+    // Tăng buffer cục bộ để xử lý chuỗi
     static char rxBuffer[2048]; 
     static int rxIndex = 0;
 
-    // Xóa rác buffer UART khi khởi động
+    // Xóa rác buffer UART phần cứng khi khởi động
     while (commandSerial.available()) commandSerial.read();
 
     Serial.println("[UART Task] Ready to receive commands...");
@@ -44,45 +44,60 @@ void uartRxTask(void* pvParameters) {
         while (commandSerial.available()) {
             char c = commandSerial.read();
             
-            // Tìm ký tự kết thúc dòng (xuống dòng)
+            // Tìm ký tự kết thúc dòng (xuống dòng \n)
             if (c == '\n') {
-                rxBuffer[rxIndex] = 0; // Kết thúc chuỗi
+                rxBuffer[rxIndex] = 0; // Kết thúc chuỗi NULL
                 String jsonCmd = String(rxBuffer);
-                jsonCmd.trim(); // Xóa khoảng trắng thừa
+                jsonCmd.trim(); // Xóa khoảng trắng thừa /r
                 
                 if (jsonCmd.length() > 0) {
                     Serial.print("[RX] "); Serial.println(jsonCmd);
 
-                    // --- 1. ƯU TIÊN CAO: XỬ LÝ STOP ---
-                    // Kiểm tra chuỗi thô ngay lập tức, không cần parse JSON hay đợi Mutex
+                    // --- 1. XỬ LÝ FAST STOP (AN TOÀN HƠN) ---
+                    // Nếu gặp stop, ta cố gắng lấy Mutex trong 100ms.
+                    // Nếu không lấy được (do MachineTask bị treo), ta VẪN GỌI STOP
+                    // nhưng chấp nhận rủi ro nhỏ để cứu hệ thống.
                     if (jsonCmd.indexOf("stop_measure") >= 0) {
-                        stateMachine.setStopFlag(true); 
                         Serial.println("[CMD] !!! FAST STOP TRIGGERED !!!");
-                        // Vẫn để code chạy xuống dưới để gửi phản hồi (ACK)
+                        // Thử lấy mutex nhanh
+                        if (xSemaphoreTake(sysMutex, 100 / portTICK_PERIOD_MS) == pdTRUE) {
+                            stateMachine.setStopFlag(true); 
+                            xSemaphoreGive(sysMutex);
+                        } else {
+                            // Cưỡng chế dừng nếu không lấy được Mutex
+                            Serial.println("[WARN] Force Stop without Mutex!");
+                            stateMachine.setStopFlag(true); 
+                        }
                     }
 
-                    // --- 2. XỬ LÝ LỆNH ---
-                    // Chờ Mutex tối đa 3 giây. Nếu máy đang bận đo quá lâu thì có thể bị drop,
-                    // nhưng lệnh STOP ở trên đã đảm bảo dừng được máy.
-                    if (xSemaphoreTake(sysMutex, 5000 / portTICK_PERIOD_MS) == pdTRUE) {
+                    // --- 2. XỬ LÝ LỆNH BÌNH THƯỜNG ---
+                    // Chờ Mutex tối đa 3 giây. 
+                    if (xSemaphoreTake(sysMutex, 3000 / portTICK_PERIOD_MS) == pdTRUE) {
                         stateMachine.handleCommand(jsonCmd);
                         xSemaphoreGive(sysMutex);
                     } else {
-                        Serial.println("[CMD ERR] System Busy (Mutex Timeout) -> Command Dropped");
-                        // Mẹo: Nếu lệnh set_mode bị drop do đang đo, hãy gửi STOP trước, sau đó gửi lại set_mode
+                        // Nếu đợi quá lâu mà không lấy được Mutex -> Hệ thống quá bận
+                        Serial.println("[CMD ERR] System Busy -> Dropped Cmd");
+                        // Gửi lỗi về Bridge để biết đường gửi lại
+                        String errJson = jsonFormatter.createError("SYSTEM_BUSY_TIMEOUT");
+                        uartCommander.pushToQueue(errJson);
                     }
                 }
                 
                 // Reset buffer cho lệnh tiếp theo
                 rxIndex = 0; 
             } else {
-                // Chỉ nhận nếu còn chỗ trong buffer
+                // Chỉ nhận nếu còn chỗ trong buffer, chừa 1 byte cho ký tự NULL
                 if (rxIndex < 2047) {
                     rxBuffer[rxIndex++] = c;
+                } else {
+                    // Buffer tràn -> Reset để tránh lỗi bộ nhớ
+                    rxIndex = 0;
+                    Serial.println("[UART ERR] Buffer Overflow -> Reset");
                 }
             }
         }
-        // Delay nhẹ để tránh chiếm dụng CPU (Watchdog)
+        // Delay nhẹ để nhường CPU cho các ngắt
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -95,27 +110,22 @@ void machineTask(void* pvParameters) {
 
     for (;;) {
         // 1. Giữ Mutex để cập nhật trạng thái
-        // Dùng portMAX_DELAY để đảm bảo update luôn được gọi khi rảnh
+        // Dùng portMAX_DELAY: Task này sẽ ngủ đông cho đến khi lấy được Mutex (không tốn CPU)
         if (xSemaphoreTake(sysMutex, portMAX_DELAY) == pdTRUE) {
             stateMachine.update();
             xSemaphoreGive(sysMutex);
         }
 
-        // 2. [DEBUG] Heartbeat mỗi 10 giây để biết Auto Mode có đang sống không
+        // 2. [DEBUG] Heartbeat
         if (millis() - lastDebugTime > 10000) {
             lastDebugTime = millis();
-            // Lấy giờ hệ thống kiểm tra
-            unsigned long now = timeSync.getCurrentTime();
-            if (now > 1600000000) {
-                 // In ra dấu chấm để biết Task vẫn đang chạy
-                //  Serial.printf("[MAIN] Alive. Time: %lu\n", now);
-            } else {
-                 Serial.println("[MAIN] Waiting for TimeSync...");
-            }
+            // unsigned long now = timeSync.getCurrentTime();
+            // Serial.printf("[MAIN] Heartbeat. Heap: %d bytes\n", ESP.getFreeHeap());
         }
 
-        // Delay 50ms: Đủ nhanh để phản hồi, đủ chậm để UART Task chen vào được
-        vTaskDelay(50 / portTICK_PERIOD_MS);
+        // Delay 20ms: Đủ mượt cho logic, nhường thời gian cho UART nhận lệnh
+        // Nếu delay quá lâu (50ms+), phản hồi UART có thể bị chậm một chút
+        vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 
@@ -131,8 +141,8 @@ void setup() {
     rs485.begin();
     sht31.begin();
     
-    // UART cho lệnh
-    commandSerial.setRxBufferSize(4096); // Buffer phần cứng lớn
+    // UART cho lệnh (Quan trọng: Tăng buffer nhận phần cứng)
+    commandSerial.setRxBufferSize(4096); 
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     uartCommander.begin(commandSerial);
 
@@ -145,16 +155,18 @@ void setup() {
 
     // 4. Khởi động StateMachine
     stateMachine.begin();
-    // Stack size = 8192 bytes (8KB) để đảm bảo ArduinoJson không làm tràn stack
-    xTaskCreatePinnedToCore(uartRxTask,  "UART_RX",8192, NULL, 1,  NULL, 0 );
 
-    xTaskCreatePinnedToCore(machineTask, "MACHINE",8192,NULL,1,NULL,1 );
+    // 5. Tạo Tasks
+    // Task UART RX: Priority cao hơn (2) để đảm bảo không bị miss dữ liệu khi CPU bận
+    xTaskCreatePinnedToCore(uartRxTask, "UART_RX", 8192, NULL, 2, NULL, 0);
+
+    // Task Machine: Priority thấp hơn (1), chạy ở Core 1 để tách biệt với việc xử lý chuỗi
+    xTaskCreatePinnedToCore(machineTask, "MACHINE", 8192, NULL, 1, NULL, 1);
     
     Serial.println("[BOOT] Tasks Created. System Running.");
 }
 
 void loop() {
-    // Loop để trống vì chúng ta dùng FreeRTOS Tasks
-    // Xóa Task loop mặc định để tiết kiệm RAM  
+    // Xóa Task loop mặc định để giải phóng RAM cho Stack
     vTaskDelete(NULL);
 }

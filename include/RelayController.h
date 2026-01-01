@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "config.h"
+#include "Config.h"
 
 class RelayController {
 public:

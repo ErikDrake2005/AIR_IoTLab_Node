@@ -31,7 +31,6 @@
 
 // ========== SHT31 ==========
 #define SHT31_I2C_ADDR  0x44
-// [QUAN TRỌNG] Phải định nghĩa chân để SHT31Sensor.cpp dùng
 #define SHT31_SDA_PIN   21
 #define SHT31_SCL_PIN   22
 
