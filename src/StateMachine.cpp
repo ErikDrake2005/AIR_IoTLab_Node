@@ -5,8 +5,9 @@
 #include "TimeSync.h"
 #include <ArduinoJson.h>
 #include "CRC32.h"
+#include "Config.h"
 
-// Cấu hình thời gian (ms)
+// --- CẤU HÌNH THỜI GIAN ---
 const unsigned long TIME_STABILIZE = 60000;     
 const unsigned long TIME_MEASURE_1 = 180000;    
 const unsigned long TIME_MEASURE_2 = 480000;    
@@ -23,7 +24,7 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _currentManualInterval = DEFAULT_MANUAL_INTERVAL;
     
     _lastGridBlock = 0;
-    _lastTriggerMinute = -1; // Reset bộ đếm phút
+    _lastTriggerMinute = -1; 
 
     _calculateGridInterval();
     _schedules.clear();
@@ -34,34 +35,27 @@ void StateMachine::begin() {
     _sendResponse(_json.createTimeSyncRequest());
 }
 
-// --- LOGIC LOOP CHÍNH ---
 void StateMachine::update() {
-    // 1. Nếu đang bận (Đang đo) -> Chạy quy trình đo
+    // 1. Ưu tiên xử lý quy trình đo
     if (_cycleState != STATE_IDLE) {
         _processCycleLogic();
         return; 
     }
 
-    // 2. CHECK AUTO (Chỉ chạy khi Mode là AUTO và Rảnh)
+    // 2. Logic AUTO (Chỉ chạy khi rảnh)
     if (_mode == AUTO) {
         unsigned long currentEpoch = _timeSync.getCurrentTime();
         
-        // Debug: In ra trạng thái mỗi 10 giây để biết Auto còn sống không
         static unsigned long lastLog = 0;
-        if (millis() - lastLog > 10000) {
-            lastLog = millis();
-        }
+        if (millis() - lastLog > 10000) lastLog = millis();
 
-        // Điều kiện 1: Đã đồng bộ giờ (Lấy mốc > 100000 theo code gốc của bạn)
         if (currentEpoch > 100000) {
             bool trigger = false;
             
-            // Ưu tiên: Check lịch hẹn giờ
             if (_isTimeForScheduledMeasure()) {
                 Serial.println("[AUTO] Trigger: Scheduled Time Match!");
                 trigger = true;
             } 
-            // Sau đó: Check lịch theo lưới (Grid)
             else if (_isTimeForGridMeasure()) {
                 Serial.println("[AUTO] Trigger: Grid Cycle Match!");
                 trigger = true;
@@ -74,122 +68,203 @@ void StateMachine::update() {
     }
 }
 
-// --- XỬ LÝ LỆNH ---
+// =================================================================================
+// XỬ LÝ LỆNH: FULL ACK + NODE-RED COMPATIBLE + ARDUINOJSON V7 FIX
+// =================================================================================
 void StateMachine::handleCommand(const String& cleanJson) {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, cleanJson);
-    
     if (error) {
         _sendResponse(_json.createError("JSON_ERR"));
         return;
     }
-    
-    if (!doc["type"].is<const char*>()) return;
-    const char* type = doc["type"];
-    Serial.printf("[INFO] Cmd: %s\n", type);
+    Serial.println("[SM] Processing Command...");
+    bool configChanged = false;
+    bool ackSent = false;
+    // ============================================================
+    // 1. CẤU HÌNH & THỜI GIAN
+    // ============================================================
+   // --- XỬ LÝ TIMESTAMP VỚI DEBUG ---
+    if (doc["timestamp"].is<unsigned long>()) {
+        unsigned long ts = doc["timestamp"];
+        
+        // [DEBUG] In ra giá trị timestamp nhận được
+        Serial.printf("[DEBUG] RX Timestamp: %lu\n", ts);
 
-    // 1. SET MODE
-    if (strcmp(type, "set_mode") == 0) {
-        if (doc["mode"].is<String>()) {
-            String m = doc["mode"];
-            if (m == "manual") {
+        if (ts > 0) {
+            unsigned long oldTime = _timeSync.getCurrentTime();
+            _timeSync.updateEpoch(ts);
+            unsigned long newTime = _timeSync.getCurrentTime();
+
+            _lastTriggerMinute = -1; 
+            configChanged = true;
+            
+            Serial.printf("[DEBUG] Time Updated: %lu -> %lu (Diff: %ld ms)\n", oldTime, newTime, (long)(newTime - oldTime));
+            Serial.println("[DEBUG] Time Synced OK");
+        } else {
+            Serial.println("[DEBUG] Error: Timestamp is 0, ignored.");
+        }
+    }
+    else if (doc["timestamp"]) {
+        Serial.println("[DEBUG] Error: 'timestamp' found but is NOT unsigned long (Check Gateway sending type).");
+    }
+
+    // Cài giờ (Schedule)
+    if (doc["set_time"].is<const char*>()) {
+        const char* tStr = doc["set_time"];
+        _parseSetTime(String(tStr));
+        configChanged = true;
+    }
+
+    // Cấu hình Auto (Số lần đo/ngày)
+    if (doc["measures_per_day"].is<int>()) {
+        int n = doc["measures_per_day"];
+        if (n != _measuresPerDay) { 
+            _measuresPerDay = n;
+            _calculateGridInterval();
+            Serial.printf("[SET] Auto Grid: %d/day\n", n);
+            configChanged = true;
+        }
+    }
+    // Hỗ trợ lệnh cũ
+    if (doc["cmd"] == "set_cycle" && doc["val"].is<int>()) {
+        _measuresPerDay = doc["val"];
+        _calculateGridInterval();
+        configChanged = true;
+    }
+
+    // Cấu hình Manual (Cycle)
+    if (doc["cycle_manual"].is<int>()) {
+        int mins = doc["cycle_manual"];
+        if (mins < 1) mins = 1; 
+        if (mins > 59) mins = 59;
+        unsigned long newInterval = (unsigned long)mins * 60000UL;
+        
+        if (_currentManualInterval != newInterval) {
+            _currentManualInterval = newInterval;
+            Serial.printf("[SET] Set Manual Cycle: %d min\n", mins);
+            configChanged = true;
+        }
+    }
+    else if (doc["cycle"].is<int>()) { // Hỗ trợ cũ
+         int mins = doc["cycle"];
+         if (mins > 0) {
+             _currentManualInterval = (unsigned long)mins * 60000UL;
+             configChanged = true;
+         }
+    }
+
+    // ============================================================
+    // 2. CHẾ ĐỘ HOẠT ĐỘNG (MODE)
+    // ============================================================
+    if (doc["mode"].is<const char*>()) {
+        const char* m = doc["mode"];
+        if (strcmp(m, "manual") == 0) {
+            if (_mode != MANUAL) {
                 _mode = MANUAL;
                 _stopAndResetCycle(); 
-                _sendResponse(_json.createAck("MANUAL_OK"));
-            } else {
+                Serial.println("[SET] Mode: MANUAL");
+                configChanged = true;
+            }
+        } 
+        else if (strcmp(m, "auto") == 0) {
+            if (_mode != AUTO) {
                 _mode = AUTO;
                 _stopAndResetCycle();
-                // [QUAN TRỌNG] Reset lại bộ đếm để Auto không bị kẹt
                 _lastTriggerMinute = -1; 
-                _lastGridBlock = 0;
-                
-                Serial.println("[SM] Mode -> AUTO");
-                _sendResponse(_json.createAck("AUTO_OK"));
+                Serial.println("[SET] Mode: AUTO");
+                configChanged = true;
             }
         }
-        return;
     }
 
-    // 2. TRIGGER MEASURE (Tự động chuyển Manual)
-    if (strcmp(type, "trigger_measure") == 0) {
-        if (_cycleState != STATE_IDLE && _cycleState != STATE_MANUAL_LOOP) {
-             _sendResponse(_json.createError("BUSY"));
-             return;
-        }
+    // ============================================================
+    // 3. TRẠNG THÁI HOẠT ĐỘNG (TRIGGER / STOP)
+    // ============================================================
+    bool isTrigger = false;
+    bool isStop = false;
 
-        if (_mode != MANUAL) {
-            _mode = MANUAL;
-            Serial.println("[SM] Auto-switch to MANUAL by Trigger");
-        }
-
-        if (doc["cycle"].is<int>()) {
-            int mins = doc["cycle"];
-            if (mins < 1) mins = 1; if (mins > 59) mins = 59;
-            _currentManualInterval = (unsigned long)mins * 60000UL;
-            Serial.printf("[SM] Custom Cycle: %d mins\n", mins);
-        } else {
-             if(_currentManualInterval == 0) _currentManualInterval = DEFAULT_MANUAL_INTERVAL;
-        }
-
-        _startManualLoop();
-        _sendResponse(_json.createAck("MEASURE_LOOP_STARTED"));
-        return;
+    if (doc["set_state"].is<const char*>()) {
+        const char* s = doc["set_state"];
+        if (strcmp(s, "measure") == 0) isTrigger = true;
+        else if (strcmp(s, "stop") == 0) isStop = true;
+    }
+    if (doc["cmd"].is<const char*>()) {
+        const char* c = doc["cmd"];
+        if (strcmp(c, "trigger_measure") == 0) isTrigger = true;
+        else if (strcmp(c, "stop_measure") == 0) isStop = true;
     }
 
-    // 3. SET TIME (Thêm lịch hẹn)
-    if (strcmp(type, "set_time") == 0) {
-        if (doc["time"].is<String>()) {
-            _parseSetTime(doc["time"].as<String>());
-            _sendResponse(_json.createAck("SCHEDULE_ADDED"));
-        }
-        return;
-    }
-
-    // 4. STOP
-    if (strcmp(type, "stop_measure") == 0) {
+    if (isStop) {
         _stopAndResetCycle();
         _sendResponse(_json.createAck("MEASURE_STOPPED"));
-        return;
+        ackSent = true;
     }
-
-    // 5. TIME SYNC
-    if (strcmp(type, "time_sync") == 0) {
-        String timeStr = "";
-        if (doc["timestamp"].is<String>()) timeStr = doc["timestamp"].as<String>();
-        else if (doc["time"].is<String>()) timeStr = doc["time"].as<String>();
-
-        if (timeStr != "") {
-            _timeSync.syncFromTimestamp(timeStr);
-            _lastTriggerMinute = -1; // Reset để có thể trigger ngay nếu trùng phút
-            _sendResponse(_json.createAck("TIME_SYNCED"));
+    else if (isTrigger) {
+        if (_cycleState != STATE_IDLE && _cycleState != STATE_MANUAL_LOOP) {
+            _sendResponse(_json.createError("BUSY")); 
+            ackSent = true;
+        } else {
+            if (_mode != MANUAL) { 
+                _mode = MANUAL; 
+                configChanged = true; 
+            }
+            _startManualLoop();
+            _sendResponse(_json.createAck("MEASURE_STARTED"));
+            ackSent = true;
         }
-        return;
     }
 
-    // 6. SET CYCLE (GRID)
-    if (strcmp(type, "set_cycle") == 0) {
-        if (doc["measures_per_day"].is<int>()) {
-            _measuresPerDay = doc["measures_per_day"];
-            _calculateGridInterval();
-            _sendResponse(_json.createAck("CYCLE_SET_OK"));
-        }
-        return;
-    }
-
-    // Relay Control (Manual only)
+    // ============================================================
+    // 4. ĐIỀU KHIỂN PHẦN CỨNG (Chỉ MANUAL)
+    // ============================================================
     if (_mode == MANUAL) {
-        if (strcmp(type, "open_door") == 0)  { _relay.ON_DOOR();  _sendResponse(_json.createAck("DOOR_OPENED")); return; }
-        if (strcmp(type, "close_door") == 0) { _relay.OFF_DOOR(); _sendResponse(_json.createAck("DOOR_CLOSED")); return; }
-        if (strcmp(type, "fans_on") == 0)    { _relay.ON_FAN();   _sendResponse(_json.createAck("FAN_ON_OK"));   return; }
-        if (strcmp(type, "fans_off") == 0)   { _relay.OFF_FAN();  _sendResponse(_json.createAck("FAN_OFF_OK"));  return; }
-    } else {
-        if (strcmp(type, "open_door")==0 || strcmp(type, "close_door")==0 || strcmp(type, "fans_on")==0) {
-            _sendResponse(_json.createError("IN AUTO MODE"));
+        if (doc["set_door"].is<const char*>()) {
+            const char* d = doc["set_door"];
+            if (strcmp(d, "open") == 0) { 
+                _relay.ON_DOOR(); 
+                _sendResponse(_json.createAck("DOOR_OPENED")); ackSent = true; 
+            }
+            else if (strcmp(d, "close") == 0) { 
+                _relay.OFF_DOOR(); 
+                _sendResponse(_json.createAck("DOOR_CLOSED")); ackSent = true; 
+            }
         }
+        if (doc["set_fans"].is<const char*>()) {
+            const char* f = doc["set_fans"];
+            if (strcmp(f, "on") == 0) { 
+                _relay.ON_FAN(); 
+                _sendResponse(_json.createAck("FANS_ON")); ackSent = true; 
+            }
+            else if (strcmp(f, "off") == 0) { 
+                _relay.OFF_FAN(); 
+                _sendResponse(_json.createAck("FANS_OFF")); ackSent = true; 
+            }
+        }
+        // Lệnh cũ
+        if (!ackSent && doc["cmd"].is<const char*>()) {
+             const char* c = doc["cmd"];
+             if (strcmp(c, "open_door")==0) { _relay.ON_DOOR(); _sendResponse(_json.createAck("DOOR_OPENED")); ackSent=true;}
+             else if (strcmp(c, "close_door")==0) { _relay.OFF_DOOR(); _sendResponse(_json.createAck("DOOR_CLOSED")); ackSent=true;}
+             else if (strcmp(c, "fans_on")==0) { _relay.ON_FAN(); _sendResponse(_json.createAck("FANS_ON")); ackSent=true;}
+             else if (strcmp(c, "fans_off")==0) { _relay.OFF_FAN(); _sendResponse(_json.createAck("FANS_OFF")); ackSent=true;}
+        }
+    } 
+    else {
+        if (doc["set_door"].is<const char*>() || doc["set_fans"].is<const char*>()) {
+            _sendResponse(_json.createError("ERR_IN_AUTO")); 
+            ackSent = true;
+        }
+    }
+
+    if (configChanged && !ackSent) {
+        _sendResponse(_json.createAck("CONFIG_OK"));
     }
 }
 
-// --- HELPER LOGIC THỜI GIAN (ĐÃ TỐI ƯU) ---
+// =================================================================================
+// CÁC HÀM HELPER
+// =================================================================================
 
 void StateMachine::_calculateGridInterval() {
     if (_measuresPerDay <= 0) _measuresPerDay = 1;
@@ -200,10 +275,9 @@ void StateMachine::_parseSetTime(String timeStr) {
     int h, m, s;
     if (sscanf(timeStr.c_str(), "%d:%d:%d", &h, &m, &s) == 3) {
         for (const auto& sch : _schedules) {
-            if (sch.hour == h && sch.minute == m) return; // Trùng giờ phút là bỏ qua
+            if (sch.hour == h && sch.minute == m) return; 
         }
         if (_schedules.size() >= 10) _schedules.erase(_schedules.begin());
-        
         _schedules.push_back({h, m, s});
         Serial.printf("[SM] Schedule added: %02d:%02d:%02d\n", h, m, s);
     }
@@ -215,7 +289,6 @@ bool StateMachine::_isTimeForGridMeasure() {
     return (currentEpoch % _gridIntervalSeconds) < 5;
 }
 
-// [QUAN TRỌNG] Logic so sánh lịch hẹn an toàn
 bool StateMachine::_isTimeForScheduledMeasure() {
     unsigned long currentEpoch = _timeSync.getCurrentTime();
     if (currentEpoch < 100000) return false;
@@ -223,13 +296,10 @@ bool StateMachine::_isTimeForScheduledMeasure() {
     time_t raw = (time_t)currentEpoch;
     struct tm* t = localtime(&raw);
 
-    // 1. Chống lặp (Debounce): Nếu phút này đã chạy rồi thì không chạy nữa
     if (t->tm_min == _lastTriggerMinute) return false;
 
     for (const auto& s : _schedules) {
-        // 2. So sánh Giờ và Phút (Bỏ qua giây để đảm bảo chắc chắn chạy)
         if (t->tm_hour == s.hour && t->tm_min == s.minute) {
-            // Cập nhật phút đã chạy để không lặp lại trong phút này
             _lastTriggerMinute = t->tm_min; 
             Serial.printf("[SM] Match Schedule: %02d:%02d\n", s.hour, s.minute);
             return true;
@@ -238,9 +308,7 @@ bool StateMachine::_isTimeForScheduledMeasure() {
     return false;
 }
 
-// --- QUY TRÌNH ĐO ---
-
-void StateMachine::_startCycle() { // AUTO
+void StateMachine::_startCycle() { 
     _cycleState = STATE_PREPARING;
     _cycleStartMillis = millis();
     memset(_miniData, 0, sizeof(_miniData)); 
@@ -249,7 +317,7 @@ void StateMachine::_startCycle() { // AUTO
     Serial.println("[SM] Auto Cycle Started.");
 }
 
-void StateMachine::_startManualLoop() { // MANUAL
+void StateMachine::_startManualLoop() { 
     _cycleState = STATE_MANUAL_LOOP;
     _relay.OFF_DOOR(); 
     _relay.ON_FAN();   
@@ -257,10 +325,13 @@ void StateMachine::_startManualLoop() { // MANUAL
     Serial.println("[SM] Manual Loop Started.");
 }
 
+// ------------------------------------------------------------------
+// QUAN TRỌNG: CẬP NHẬT LOGIC ĐO LƯỜNG VÀ BÁO LỖI
+// ------------------------------------------------------------------
 void StateMachine::_processCycleLogic() {
     unsigned long elapsed = millis() - _cycleStartMillis;
 
-    // Timeout logic (Trừ Manual Loop)
+    // Timeout an toàn cho Auto Cycle
     if (elapsed > 960000 && _cycleState != STATE_MANUAL_LOOP) {
         Serial.println("[SM] Cycle Timeout!");
         _finishCycle();
@@ -272,22 +343,20 @@ void StateMachine::_processCycleLogic() {
             _cycleState = STATE_STABILIZING;
             Serial.println("[SM] -> STABILIZING (60s)");
             break;
-            
         case STATE_STABILIZING:
             if (elapsed >= TIME_STABILIZE) {
                 _cycleState = STATE_WAIT_MEASURE_1;
                 Serial.println("[SM] -> WAIT M1");
             }
             break;
-
         case STATE_WAIT_MEASURE_1:
             if (elapsed >= TIME_MEASURE_1) {
                 Serial.println("[SM] Measuring 1/3...");
+                // Note: Tạm thời không check lỗi ở bước trung gian này, để dành check ở _finishCycle
                 _meas.doFullMeasurement(_miniData[0]);
                 _cycleState = STATE_WAIT_MEASURE_2;
             }
             break;
-
         case STATE_WAIT_MEASURE_2:
             if (elapsed >= TIME_MEASURE_2) {
                 Serial.println("[SM] Measuring 2/3...");
@@ -295,7 +364,6 @@ void StateMachine::_processCycleLogic() {
                 _cycleState = STATE_WAIT_MEASURE_3;
             }
             break;
-
         case STATE_WAIT_MEASURE_3:
             if (elapsed >= TIME_MEASURE_3) {
                 Serial.println("[SM] Measuring 3/3...");
@@ -303,39 +371,52 @@ void StateMachine::_processCycleLogic() {
                 _cycleState = STATE_FINISHING;
             }
             break;
-
         case STATE_FINISHING:
             _finishCycle();
             break;
 
+        // --- XỬ LÝ MANUAL MODE VỚI BÁO LỖI ---
         case STATE_MANUAL_LOOP:
             if (millis() >= _nextManualMeasureMillis) {
                 Serial.println("[SM-MANUAL] Measuring...");
                 MeasurementData tempData;
                 bool result = _meas.doFullMeasurement(tempData); 
-
-                // Gửi dữ liệu (hoặc 0 nếu lỗi)
+                
                 if (result) {
-                    String json = _json.createDataJson(tempData.ch4, tempData.co, tempData.alc, tempData.nh3, tempData.h2, tempData.temp, tempData.hum);
-                    _sendResponse(json);
+                    // ĐO THÀNH CÔNG -> GỬI DỮ LIỆU
+                    String jsonStr = _json.createDataJson(
+                        tempData.ch4, tempData.co, tempData.alc, 
+                        tempData.nh3, tempData.h2, tempData.temp, tempData.hum
+                    );
+                    _sendResponse(jsonStr); 
                 } else {
-                    String json = _json.createDataJson(0, 0, 0, 0, 0, 0, 0);
-                    _sendResponse(json);
+                    // ĐO THẤT BẠI -> GỬI LỖI (dht, slave, v.v...)
+                    String errorName = _meas.getLastError(); // Lấy tên lỗi từ Measurement
+                    if (errorName.length() == 0) errorName = "sensor_err"; // Fallback nếu rỗng
+                    
+                    Serial.print("[SM-MANUAL] Error detected: "); 
+                    Serial.println(errorName);
+                    
+                    _sendResponse(_json.createError(errorName));
                 }
                 
                 _nextManualMeasureMillis = millis() + _currentManualInterval;
-                Serial.printf("[SM-MANUAL] Next: %lu ms\n", _currentManualInterval);
+                Serial.printf("[SM-MANUAL] Next in: %lu ms\n", _currentManualInterval);
             }
             break;
     }
 }
 
+// --- CẬP NHẬT KẾT THÚC CHU TRÌNH AUTO ---
 void StateMachine::_finishCycle() {
     float sum[7] = {0}; 
     int count = 0;
     
+    // Tính trung bình các lần đo THÀNH CÔNG
     for(int i=0; i<3; i++) {
-        if(_miniData[i].temp != 0) { 
+        // Kiểm tra điều kiện dữ liệu hợp lệ (Temp khác 0 là một dấu hiệu đơn giản)
+        // Hoặc check cờ valid nếu struct miniData có
+        if(_miniData[i].temp != 0 && !isnan(_miniData[i].temp)) { 
             sum[0]+=_miniData[i].ch4; sum[1]+=_miniData[i].co; sum[2]+=_miniData[i].alc;
             sum[3]+=_miniData[i].nh3; sum[4]+=_miniData[i].h2;
             sum[5]+=_miniData[i].temp; sum[6]+=_miniData[i].hum;
@@ -344,12 +425,21 @@ void StateMachine::_finishCycle() {
     }
     
     if(count > 0) {
+        // NẾU CÓ ÍT NHẤT 1 LẦN ĐO THÀNH CÔNG
         for(int k=0; k<7; k++) sum[k] /= count;
+        String json = _json.createDataJson(sum[0], sum[1], sum[2], sum[3], sum[4], sum[5], sum[6]);
+        _sendResponse(json);
+        Serial.printf("[SM] Cycle Done. Valid measures: %d/3\n", count);
+    } 
+    else {
+        // NẾU CẢ 3 LẦN ĐỀU THẤT BẠI
+        String errorName = _meas.getLastError(); // Lấy lỗi của lần đo cuối cùng
+        if (errorName.length() == 0) errorName = "cycle_fail";
+        
+        Serial.println("[SM] Cycle Failed! All measurements error.");
+        _sendResponse(_json.createError(errorName));
     }
 
-    String json = _json.createDataJson(sum[0], sum[1], sum[2], sum[3], sum[4], sum[5], sum[6]);
-    _sendResponse(json);
-    Serial.println("[SM] Cycle Done.");
     _stopAndResetCycle();
 }
 
@@ -363,7 +453,7 @@ void StateMachine::_stopAndResetCycle() {
 void StateMachine::_sendResponse(String json) {
     unsigned long crc = CRC32::calculate(json);
     String packet = json + "|" + String(crc, HEX);
-    _cmd.send(packet); 
+    _cmd.pushToQueue(packet); 
 }
 
 void StateMachine::setStopFlag(bool flag) {

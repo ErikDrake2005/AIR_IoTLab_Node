@@ -46,6 +46,7 @@ public:
 
     // [FIX] Hàm này cần thiết vì main.cpp gọi khi nhận lệnh stop bên ngoài
     void setStopFlag(bool flag);
+    void processJsonCommand(const String& jsonStr);
 
 private:
     // Các module con (Tham chiếu)
@@ -61,7 +62,7 @@ private:
     MachineMode _mode;
     CycleState _cycleState;
     unsigned long _cycleStartMillis;
-    
+    void _handleDirectCommand(const char* cmd);
     // [FIX] Các biến kiểm soát luồng (Bị thiếu trong phiên bản trước)
     bool _stopRequested;          // Cờ báo dừng khẩn cấp
     unsigned long _lastGridBlock; // Đánh dấu block thời gian lưới (Grid)
