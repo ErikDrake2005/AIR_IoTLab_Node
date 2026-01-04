@@ -148,19 +148,37 @@ void machineTask(void* pvParameters) {
     }
 }
 
-// --- SETUP ---
 void setup() {
     // 1. Cấu hình hệ thống
-    setCpuFrequencyMhz(240); // Chạy max tốc độ
+    setCpuFrequencyMhz(240); 
     Serial.begin(115200);
     Serial.println("\n\n=== [BOOT] AIR_VL_01 SYSTEM STARTING ===");
+
+    // -----------------------------------------------------------
+    // [FIX QUAN TRỌNG] KHỞI ĐỘNG I2C TRƯỚC KHI GỌI CẢM BIẾN
+    // -----------------------------------------------------------
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
+    Serial.printf("[I2C] Bus Started on SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+
+    // [DEBUG] Quét thử xem SHT31 có online không ngay lập tức
+    Serial.print("[I2C] Scanning SHT31... ");
+    Wire.beginTransmission(0x44);
+    if (Wire.endTransmission() == 0) Serial.println("FOUND at 0x44 (OK)");
+    else {
+        Wire.beginTransmission(0x45);
+        if (Wire.endTransmission() == 0) Serial.println("FOUND at 0x45 (OK)");
+        else Serial.println("ERROR: NOT FOUND! Check wiring.");
+    }
+    // -----------------------------------------------------------
 
     // 2. Khởi động các module phần cứng
     relay.begin();
     rs485.begin();
-    sht31.begin();
     
-    // UART cho lệnh (Quan trọng: Tăng buffer nhận phần cứng)
+    // Bây giờ mới gọi SHT31 begin (nó sẽ dùng bus I2C đã start ở trên)
+    sht31.begin(); 
+    
+    // UART cho lệnh
     commandSerial.setRxBufferSize(4096); 
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     uartCommander.begin(commandSerial);
@@ -174,12 +192,9 @@ void setup() {
 
     // 4. Khởi động StateMachine
     stateMachine.begin();
-
-    // 5. Tạo Tasks
-    // Task UART RX: Priority cao hơn (2) để đảm bảo không bị miss dữ liệu khi CPU bận
     xTaskCreatePinnedToCore(uartRxTask, "UART_RX", 8192, NULL, 2, NULL, 0);
 
-    // Task Machine: Priority thấp hơn (1), chạy ở Core 1 để tách biệt với việc xử lý chuỗi
+    // Task Machine: Priority 1, chạy Core 1 (Core ứng dụng chính)
     xTaskCreatePinnedToCore(machineTask, "MACHINE", 8192, NULL, 1, NULL, 1);
     
     Serial.println("[BOOT] Tasks Created. System Running.");
