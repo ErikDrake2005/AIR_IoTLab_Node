@@ -116,6 +116,25 @@ void machineTask(void* pvParameters) {
             xSemaphoreGive(sysMutex);
         }
 
+        // ====================================================================
+        // [FIX QUAN TRỌNG] KIỂM TRA VÀ GỬI DỮ LIỆU ĐI (TX)
+        // Nếu không có đoạn này, gói tin chỉ nằm trong Queue mà không bao giờ gửi
+        // ====================================================================
+        if (uartCommander.hasCommand()) {
+            String packet = uartCommander.getCommand();
+            if (packet.length() > 0) {
+                // Gửi ra UART nối với Bridge
+                commandSerial.print(packet);
+                // BẮT BUỘC phải có xuống dòng để Bridge cắt chuỗi
+                commandSerial.println(); 
+                
+                // Debug log
+                Serial.print("[UART_TX] Sent: ");
+                Serial.println(packet);
+            }
+        }
+        // ====================================================================
+
         // 2. [DEBUG] Heartbeat
         if (millis() - lastDebugTime > 10000) {
             lastDebugTime = millis();
