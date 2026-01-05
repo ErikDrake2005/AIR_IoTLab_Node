@@ -56,7 +56,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
 
     bool configChanged = false;
     bool ackSent = false;
-
     if (doc["timestamp"].is<unsigned long>()) {
         unsigned long ts = doc["timestamp"];
         if (ts > 0) {
@@ -102,7 +101,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
             configChanged = true;
         }
     }
-
     const char* set_state = doc["set_state"];
     const char* cmd = doc["cmd"];
     bool isTrigger = (set_state && strcmp(set_state, "measure") == 0) || (cmd && strcmp(cmd, "trigger_measure") == 0);
@@ -110,29 +108,70 @@ void StateMachine::handleCommand(const String& cleanJson) {
 
     if (isStop) {
         _stopAndResetCycle();
-        _sendResponse(_json.createAck("MEASURE_STOPPED"));
+        JsonDocument ackDoc;
+        ackDoc["type"] = "ack";
+        ackDoc["cmd"] = "MEASURE_STOPPED";
+        ackDoc["timestamp"] = _timeSync.getCurrentTime();
+        String out; serializeJson(ackDoc, out);
+        _sendResponse(out);
         ackSent = true;
-    } else if (isTrigger) {
+    } 
+    else if (isTrigger) {
         if (_cycleState != STATE_IDLE && _cycleState != STATE_MANUAL_LOOP) {
             _sendResponse(_json.createError("BUSY"));
         } else {
             if (_mode != MANUAL) { _mode = MANUAL; configChanged = true; }
             _startManualLoop();
-            _sendResponse(_json.createAck("MEASURE_STARTED"));
+            
+            // [FIX] Tự tạo JSON ACK có timestamp
+            JsonDocument ackDoc;
+            ackDoc["type"] = "ack";
+            ackDoc["cmd"] = "MEASURE_STARTED";
+            ackDoc["timestamp"] = _timeSync.getCurrentTime();
+            String out; serializeJson(ackDoc, out);
+            _sendResponse(out);
         }
         ackSent = true;
     }
-
     if (_mode == MANUAL) {
         const char* d = doc["set_door"];
         const char* f = doc["set_fans"];
-        if (d) {
-            if (strcmp(d, "open") == 0) { _relay.ON_DOOR(); _sendResponse(_json.createAck("DOOR_OPENED")); ackSent = true; }
-            else if (strcmp(d, "close") == 0) { _relay.OFF_DOOR(); _sendResponse(_json.createAck("DOOR_CLOSED")); ackSent = true; }
-        }
-        if (f) {
-            if (strcmp(f, "on") == 0) { _relay.ON_FAN(); _sendResponse(_json.createAck("FANS_ON")); ackSent = true; }
-            else if (strcmp(f, "off") == 0) { _relay.OFF_FAN(); _sendResponse(_json.createAck("FANS_OFF")); ackSent = true; }
+        if (d || f) {
+            JsonDocument ackDoc;
+            ackDoc["type"] = "ack";
+            ackDoc["timestamp"] = _timeSync.getCurrentTime();
+            bool actionTaken = false;
+
+            if (d) {
+                if (strcmp(d, "open") == 0) { 
+                    _relay.ON_DOOR(); 
+                    ackDoc["cmd"] = "DOOR_OPENED"; 
+                    actionTaken = true; 
+                }
+                else if (strcmp(d, "close") == 0) { 
+                    _relay.OFF_DOOR(); 
+                    ackDoc["cmd"] = "DOOR_CLOSED"; 
+                    actionTaken = true; 
+                }
+            }
+            if (f) {
+                if (strcmp(f, "on") == 0) { 
+                    _relay.ON_FAN(); 
+                    ackDoc["cmd"] = "FANS_ON"; 
+                    actionTaken = true; 
+                }
+                else if (strcmp(f, "off") == 0) { 
+                    _relay.OFF_FAN(); 
+                    ackDoc["cmd"] = "FANS_OFF"; 
+                    actionTaken = true; 
+                }
+            }
+
+            if (actionTaken) {
+                String out; serializeJson(ackDoc, out);
+                _sendResponse(out);
+                ackSent = true;
+            }
         }
     } else {
         if (!doc["set_door"].isNull() || !doc["set_fans"].isNull()) {
@@ -142,7 +181,13 @@ void StateMachine::handleCommand(const String& cleanJson) {
     }
 
     if (configChanged && !ackSent) {
-        _sendResponse(_json.createAck("CONFIG_OK"));
+        // Cấu hình thành công cũng cần timestamp nếu muốn chắc ăn
+        JsonDocument ackDoc;
+        ackDoc["type"] = "ack";
+        ackDoc["cmd"] = "CONFIG_OK";
+        ackDoc["timestamp"] = _timeSync.getCurrentTime();
+        String out; serializeJson(ackDoc, out);
+        _sendResponse(out);
     }
 }
 
@@ -208,6 +253,11 @@ void StateMachine::_finishCycle() {
     float avgs[7];
     for (int k = 0; k < 7; k++) avgs[k] = (counts[k] > 0) ? (sums[k] / counts[k]) : -1.0;
     
+    Serial.println("\n--- [SM] CYCLE RESULT ---");
+    Serial.printf("CH4: %.2f | CO: %.2f | ALC: %.2f\n", avgs[0], avgs[1], avgs[2]);
+    Serial.printf("NH3: %.2f | H2: %.2f | T/H: %.1f/%.1f\n", avgs[3], avgs[4], avgs[5], avgs[6]);
+    Serial.println("-------------------------");
+
     _sendResponse(_json.createDataJson(avgs[0], avgs[1], avgs[2], avgs[3], avgs[4], avgs[5], avgs[6]));
     _stopAndResetCycle();
 }
@@ -215,9 +265,19 @@ void StateMachine::_finishCycle() {
 void StateMachine::_startCycle() {
     _cycleState = STATE_PREPARING;
     _cycleStartMillis = millis();
-    memset(_miniData, 0, sizeof(_miniData));
+    
+    for(int i=0; i<3; i++) {
+        _miniData[i].ch4 = -1;
+        _miniData[i].co  = -1;
+        _miniData[i].alc = -1;
+        _miniData[i].nh3 = -1;
+        _miniData[i].h2  = -1;
+        _miniData[i].temp = -1;
+        _miniData[i].hum  = -1;
+    }
     _relay.OFF_DOOR();
     _relay.ON_FAN();
+    Serial.println("[SM] Auto Cycle Started");
 }
 
 void StateMachine::_startManualLoop() {
@@ -234,8 +294,8 @@ void StateMachine::_stopAndResetCycle() {
 }
 
 void StateMachine::_sendResponse(String json) {
-    Serial.print("[SM] Pushing to Queue: ");
-    Serial.println(json);
+    Serial.print("[SM] Queue: ");
+    Serial.println(json); 
     unsigned long crc = CRC32::calculate(json);
     _cmd.pushToQueue(json + "|" + String(crc, HEX));
 }
@@ -250,11 +310,18 @@ void StateMachine::_calculateGridInterval() {
 }
 
 void StateMachine::_parseSetTime(String timeStr) {
-    int h, m, s;
-    if (sscanf(timeStr.c_str(), "%d:%d:%d", &h, &m, &s) == 3) {
-        for (const auto& sch : _schedules) if (sch.hour == h && sch.minute == m) return;
+    int h, m;
+    if (sscanf(timeStr.c_str(), "%d:%d", &h, &m) == 2) {
+        if (h < 0 || h > 23 || m < 0 || m > 59) return;
+        
+        for (const auto& sch : _schedules) {
+            if (sch.hour == h && sch.minute == m) return;
+        }
+        
         if (_schedules.size() >= 10) _schedules.erase(_schedules.begin());
-        _schedules.push_back({h, m, s});
+        
+        _schedules.push_back({h, m, 0});
+        Serial.printf("[SM] Added schedule: %02d:%02d\n", h, m);
     }
 }
 
