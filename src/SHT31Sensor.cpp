@@ -1,28 +1,49 @@
 #include "SHT31Sensor.h"
-SHT31Sensor::SHT31Sensor() : _sht31() {}
-bool SHT31Sensor::begin() {
-    Wire.begin(SHT31_SDA_PIN, SHT31_SCL_PIN);
-    _initialized = _sht31.begin(SHT31_I2C_ADDR);
-    if (!_initialized) {
-        Serial.println("[SHT31] Khong tim thay cam bien SHT31 – mặc định 0");
-    } else {
-        Serial.println("[SHT31] Da khoi dong cam bien SHT31");
+
+SHT31Sensor::SHT31Sensor() : _sht31() {
+    _initialized = false;
+}
+
+// [QUAN TRỌNG] Phải có "SHT31Sensor::" ở phía trước
+bool SHT31Sensor::begin() {   // <--- KIỂM TRA DÒNG NÀY
+    // Thử địa chỉ 0x44
+    if (_sht31.begin(0x44)) {
+        _initialized = true;
+        Serial.println("[SHT31] Init Success at 0x44");
+        return true;
     }
-    return _initialized;
+    
+    // Thử địa chỉ 0x45
+    if (_sht31.begin(0x45)) {
+        _initialized = true;
+        Serial.println("[SHT31] Init Success at 0x45");
+        return true;
+    }
+
+    Serial.println("[SHT31] ERROR: Sensor not found! Check wiring.");
+    _initialized = false;
+    return false;
 }
 
 bool SHT31Sensor::readData(float &temperature, float &humidity) {
     if (!_initialized) {
-        temperature = 0;
-        humidity = 0;
-        Serial.println("[SHT31] Cam bien fail – mặc định 0");
+        // Thử kết nối lại nếu chưa init được
+        if (!begin()) {
+            temperature = 0;
+            humidity = 0;
+            return false;
+        }
+    }
+
+    float t = _sht31.readTemperature();
+    float h = _sht31.readHumidity();
+
+    if (isnan(t) || isnan(h)) {
+        Serial.println("[SHT31] Read Error: NaN");
         return false;
     }
-    temperature = _sht31.readTemperature();
-    humidity = _sht31.readHumidity();
-    if (isnan(temperature) || isnan(humidity)) {
-        Serial.println("[SHT31] Loi doc du lieu cam bien SHT31");
-        return false;
-    }
+
+    temperature = t;
+    humidity = h;
     return true;
 }

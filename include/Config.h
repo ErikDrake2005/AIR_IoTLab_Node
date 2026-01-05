@@ -29,10 +29,10 @@
 #define FANA            27
 #define FAN1            14
 
-// ========== SHT31 ==========
+// ========== I2C  ==========
 #define SHT31_I2C_ADDR  0x44
-#define SHT31_SDA_PIN   21
-#define SHT31_SCL_PIN   22
+#define I2C_SDA_PIN   21
+#define I2C_SCL_PIN   22
 
 // ========== OTA ==========
 #define OTA_CHUNK_SIZE  1024
