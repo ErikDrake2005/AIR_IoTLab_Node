@@ -17,8 +17,6 @@ String JsonFormatter::createDataJson(float ch4, float co, float alc, float nh3, 
     JsonDocument doc;
     doc["type"] = "data";
     doc["timestamp"] = getTimestamp();
-    
-    // Sử dụng hàm roundVal thay vì công thức cũ
     doc["ch4"] = roundVal(ch4);
     doc["co"]  = roundVal(co);
     doc["alc"] = roundVal(alc);
