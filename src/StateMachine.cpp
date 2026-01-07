@@ -53,7 +53,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _sendResponse(_json.createError("JSON_ERR"));
         return;
     }
-
     bool configChanged = false;
     bool ackSent = false;
     if (doc["timestamp"].is<unsigned long>()) {
@@ -73,11 +72,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _calculateGridInterval();
         configChanged = true;
     }
-    if (doc["cmd"] == "set_cycle" && doc["val"].is<int>()) {
-        _measuresPerDay = doc["val"];
-        _calculateGridInterval();
-        configChanged = true;
-    }
     if (doc["cycle_manual"].is<int>()) {
         int rawVal = doc["cycle_manual"];
         int mins = constrain(rawVal, 1, 60);
@@ -87,19 +81,26 @@ void StateMachine::handleCommand(const String& cleanJson) {
             configChanged = true;
         }
     }
-
     if (doc["mode"].is<const char*>()) {
         const char* m = doc["mode"];
-        if (strcmp(m, "manual") == 0 && _mode != MANUAL) {
-            _mode = MANUAL;
+        JsonDocument ackDoc;
+        ackDoc["type"] = "ack";
+        ackDoc["timestamp"] = _timeSync.getCurrentTime();
+        
+        if (strcmp(m, "manual") == 0) {
+            _mode = MANUAL; 
             _stopAndResetCycle();
-            configChanged = true;
-        } else if (strcmp(m, "auto") == 0 && _mode != AUTO) {
+            ackDoc["cmd"] = "MODE_MANUAL";
+        } 
+        else if (strcmp(m, "auto") == 0) {
             _mode = AUTO;
             _stopAndResetCycle();
             _lastTriggerMinute = -1;
-            configChanged = true;
+            ackDoc["cmd"] = "MODE_AUTO";
         }
+        String out; serializeJson(ackDoc, out);
+        _sendResponse(out);
+        ackSent = true;
     }
     const char* set_state = doc["set_state"];
     const char* cmd = doc["cmd"];
@@ -120,10 +121,8 @@ void StateMachine::handleCommand(const String& cleanJson) {
         if (_cycleState != STATE_IDLE && _cycleState != STATE_MANUAL_LOOP) {
             _sendResponse(_json.createError("BUSY"));
         } else {
-            if (_mode != MANUAL) { _mode = MANUAL; configChanged = true; }
+            if (_mode != MANUAL) _mode = MANUAL; 
             _startManualLoop();
-            
-            // [FIX] Tự tạo JSON ACK có timestamp
             JsonDocument ackDoc;
             ackDoc["type"] = "ack";
             ackDoc["cmd"] = "MEASURE_STARTED";
@@ -173,15 +172,8 @@ void StateMachine::handleCommand(const String& cleanJson) {
                 ackSent = true;
             }
         }
-    } else {
-        if (!doc["set_door"].isNull() || !doc["set_fans"].isNull()) {
-            _sendResponse(_json.createError("ERR_IN_AUTO"));
-            ackSent = true;
-        }
-    }
-
+    } 
     if (configChanged && !ackSent) {
-        // Cấu hình thành công cũng cần timestamp nếu muốn chắc ăn
         JsonDocument ackDoc;
         ackDoc["type"] = "ack";
         ackDoc["cmd"] = "CONFIG_OK";
@@ -190,7 +182,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _sendResponse(out);
     }
 }
-
 void StateMachine::_processCycleLogic() {
     unsigned long elapsed = millis() - _cycleStartMillis;
 
