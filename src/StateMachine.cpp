@@ -23,10 +23,12 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _lastTriggerMinute = -1;
     _calculateGridInterval();
     _schedules.clear();
+    _isBootSyncSent = false;
+    _bootTimeMillis = millis();
 }
 
 void StateMachine::begin() {
-Serial.println("[SM] Started - Force STOP state");
+    Serial.println("[SM] Started - Force STOP state");
     _stopAndResetCycle();
     JsonDocument ackDoc;
     ackDoc["type"] = "ack";
@@ -35,12 +37,14 @@ Serial.println("[SM] Started - Force STOP state");
     String ackJson;
     serializeJson(ackDoc, ackJson);
     _sendResponse(ackJson);
-    delay(50); 
-    _sendResponse(_json.createTimeSyncRequest());
-    delay(500);
 }
 
 void StateMachine::update() {
+    if (!_isBootSyncSent && (millis() - _bootTimeMillis > 3000)) {
+        Serial.println("[SM] Boot delay over -> Requesting Time Sync...");
+        _sendResponse(_json.createTimeSyncRequest());
+        _isBootSyncSent = true; // Đánh dấu đã gửi, không gửi lại nữa
+    }
     if (_cycleState != STATE_IDLE) {
         _processCycleLogic();
         return;
