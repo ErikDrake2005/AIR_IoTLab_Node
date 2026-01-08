@@ -26,8 +26,18 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
 }
 
 void StateMachine::begin() {
-    Serial.println("[SM] Started");
+Serial.println("[SM] Started - Force STOP state");
+    _stopAndResetCycle();
+    JsonDocument ackDoc;
+    ackDoc["type"] = "ack";
+    ackDoc["cmd"] = "MEASURE_STOPPED";
+    ackDoc["timestamp"] = _timeSync.getCurrentTime(); 
+    String ackJson;
+    serializeJson(ackDoc, ackJson);
+    _sendResponse(ackJson);
+    delay(50); 
     _sendResponse(_json.createTimeSyncRequest());
+    delay(500);
 }
 
 void StateMachine::update() {
