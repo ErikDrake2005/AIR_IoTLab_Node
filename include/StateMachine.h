@@ -61,6 +61,8 @@ private:
     // Biến trạng thái chung
     MachineMode _mode;
     CycleState _cycleState;
+    bool _isBootSyncSent;           // Cờ đánh dấu đã gửi lệnh xin giờ chưa
+    unsigned long _bootTimeMillis;
     unsigned long _cycleStartMillis;
     void _handleDirectCommand(const char* cmd);
     // [FIX] Các biến kiểm soát luồng (Bị thiếu trong phiên bản trước)

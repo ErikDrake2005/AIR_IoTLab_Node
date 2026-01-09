@@ -87,8 +87,6 @@ void machineTask(void* pvParameters) {
             if (packet.length() > 0) {
                 commandSerial.print(packet);
                 commandSerial.println(); 
-                
-                // Debug log
                 Serial.print("[UART_TX] Sent: ");
                 Serial.println(packet);
             }
@@ -105,7 +103,7 @@ void machineTask(void* pvParameters) {
 
 void setup() {
     // 1. Cấu hình hệ thống
-    setCpuFrequencyMhz(240); 
+    setCpuFrequencyMhz(80); 
     Serial.begin(115200);
     Serial.println("\n\n=== [BOOT] AIR_VL_01 SYSTEM STARTING ===");
 
