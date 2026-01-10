@@ -41,7 +41,7 @@
 // ========== BATTERY & POWER SAVING ==========
 #define BAT_VOLTAGE_DIVIDER 2.0     
 #define BAT_MIN_VOLTAGE     3.7     // Ngưỡng NGẮT (Deep Sleep)
-#define BAT_RECOVERY_VOLTAGE 3.9    // <--- BẠN ĐANG THIẾU DÒNG NÀY
+#define BAT_RECOVERY_VOLTAGE 3.9
 #define BAT_CHECK_INTERVAL  60
 // ========== OTA ==========
 #define OTA_CHUNK_SIZE  1024

@@ -7,7 +7,6 @@
 #include "CRC32.h"
 #include "Config.h"
 
-// Các hằng số thời gian
 const unsigned long TIME_STABILIZE = 60000;
 const unsigned long TIME_MEASURE_1 = 180000;
 const unsigned long TIME_MEASURE_2 = 480000;
@@ -27,10 +26,8 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
 }
 
 void StateMachine::begin() {
-    Serial.println("[SM] Started - Force STOP state");
+Serial.println("[SM] Started - Force STOP state");
     _stopAndResetCycle();
-    
-    // Gửi ACK khởi động
     JsonDocument ackDoc;
     ackDoc["type"] = "ack";
     ackDoc["cmd"] = "MEASURE_STOPPED";
@@ -38,46 +35,21 @@ void StateMachine::begin() {
     String ackJson;
     serializeJson(ackDoc, ackJson);
     _sendResponse(ackJson);
-    
     delay(50); 
-    // Gửi yêu cầu đồng bộ giờ
     _sendResponse(_json.createTimeSyncRequest());
     delay(500);
 }
 
-// --- [QUAN TRỌNG] Hàm tính toán thời gian ngủ cho main.cpp ---
-uint32_t StateMachine::getSleepIntervalMs() {
-    // 1. Nếu đang MANUAL hoặc đang bận làm việc -> Không ngủ
-    if (_mode == MANUAL || _cycleState != STATE_IDLE) return 0;
-
-    // 2. Tính thời gian đến chu kỳ đo tiếp theo (Grid)
-    long secondsToGrid = _getSecondsToNextGrid();
-
-    // 3. Logic an toàn:
-    // Chỉ ngủ nếu thời gian rảnh > 10 giây.
-    // Trừ hao 5 giây để thức dậy trước khi đến giờ đo.
-    if (secondsToGrid > 10) {
-        return (uint32_t)(secondsToGrid - 5) * 1000;
-    }
-    return 0; // Không ngủ
-}
-
 void StateMachine::update() {
-    // Nếu đang trong chu trình đo -> xử lý đo
     if (_cycleState != STATE_IDLE) {
         _processCycleLogic();
         return;
     }
-
-    // Nếu đang Auto -> kiểm tra giờ để kích hoạt đo
     if (_mode == AUTO) {
         unsigned long currentEpoch = _timeSync.getCurrentTime();
-        if (currentEpoch > 100000) { // Đã có giờ hệ thống
+        if (currentEpoch > 100000) {
             bool trigger = false;
-            
-            // Ưu tiên 1: Lịch hẹn giờ (Schedule)
             if (_isTimeForScheduledMeasure()) trigger = true;
-            // Ưu tiên 2: Lưới thời gian (Grid)
             else if (_isTimeForGridMeasure()) trigger = true;
             
             if (trigger) _startCycle();
@@ -91,34 +63,25 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _sendResponse(_json.createError("JSON_ERR"));
         return;
     }
-
     bool configChanged = false;
     bool ackSent = false;
-
-    // 1. Xử lý đồng bộ giờ
     if (doc["timestamp"].is<unsigned long>()) {
         unsigned long ts = doc["timestamp"];
         if (ts > 0) {
             _timeSync.updateEpoch(ts);
-            _lastTriggerMinute = -1; // Reset trigger để tránh bỏ lỡ
+            _lastTriggerMinute = -1;
             configChanged = true;
         }
     }
-
-    // 2. Xử lý cài đặt lịch đo (Schedule Time)
     if (doc["set_time"].is<const char*>()) {
         _parseSetTime(String((const char*)doc["set_time"]));
         configChanged = true;
     }
-
-    // 3. Xử lý số lần đo/ngày (Grid)
     if (doc["measures_per_day"].is<int>()) {
         _measuresPerDay = doc["measures_per_day"];
         _calculateGridInterval();
         configChanged = true;
     }
-
-    // 4. Xử lý chu kỳ Manual
     if (doc["cycle_manual"].is<int>()) {
         int rawVal = doc["cycle_manual"];
         int mins = constrain(rawVal, 1, 60);
@@ -128,8 +91,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
             configChanged = true;
         }
     }
-
-    // 5. Xử lý chuyển chế độ (MODE)
     if (doc["mode"].is<const char*>()) {
         const char* m = doc["mode"];
         JsonDocument ackDoc;
@@ -151,8 +112,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _sendResponse(out);
         ackSent = true;
     }
-
-    // 6. Xử lý lệnh Điều khiển / Trigger
     const char* set_state = doc["set_state"];
     const char* cmd = doc["cmd"];
     bool isTrigger = (set_state && strcmp(set_state, "measure") == 0) || (cmd && strcmp(cmd, "trigger_measure") == 0);
@@ -183,8 +142,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
         }
         ackSent = true;
     }
-
-    // 7. Xử lý điều khiển Relay (Chỉ trong Manual)
     if (_mode == MANUAL) {
         const char* d = doc["set_door"];
         const char* f = doc["set_fans"];
@@ -226,7 +183,6 @@ void StateMachine::handleCommand(const String& cleanJson) {
             }
         }
     } 
-
     if (configChanged && !ackSent) {
         JsonDocument ackDoc;
         ackDoc["type"] = "ack";
@@ -236,11 +192,9 @@ void StateMachine::handleCommand(const String& cleanJson) {
         _sendResponse(out);
     }
 }
-
 void StateMachine::_processCycleLogic() {
     unsigned long elapsed = millis() - _cycleStartMillis;
 
-    // Timeout bảo vệ: Nếu kẹt quá lâu trong 1 trạng thái -> Force Reset
     if (elapsed > TIMEOUT_CYCLE && _cycleState != STATE_MANUAL_LOOP) {
         _finishCycle();
         return;
@@ -286,7 +240,6 @@ void StateMachine::_processCycleLogic() {
 }
 
 void StateMachine::_finishCycle() {
-    // Tính trung bình cộng 3 lần đo
     float sums[7] = {0};
     int counts[7] = {0};
     for (int i = 0; i < 3; i++) {
@@ -314,11 +267,13 @@ void StateMachine::_startCycle() {
     _cycleState = STATE_PREPARING;
     _cycleStartMillis = millis();
     
-    // Reset data buffer
     for(int i=0; i<3; i++) {
-        _miniData[i].ch4 = -1; _miniData[i].co  = -1;
-        _miniData[i].alc = -1; _miniData[i].nh3 = -1;
-        _miniData[i].h2  = -1; _miniData[i].temp = -1;
+        _miniData[i].ch4 = -1;
+        _miniData[i].co  = -1;
+        _miniData[i].alc = -1;
+        _miniData[i].nh3 = -1;
+        _miniData[i].h2  = -1;
+        _miniData[i].temp = -1;
         _miniData[i].hum  = -1;
     }
     _relay.OFF_DOOR();
@@ -330,14 +285,13 @@ void StateMachine::_startManualLoop() {
     _cycleState = STATE_MANUAL_LOOP;
     _relay.OFF_DOOR();
     _relay.ON_FAN();
-    _nextManualMeasureMillis = millis() + 1000; // Đo ngay sau 1s
+    _nextManualMeasureMillis = millis() + 1000;
 }
 
 void StateMachine::_stopAndResetCycle() {
     _cycleState = STATE_IDLE;
     _relay.OFF_FAN();
     _relay.ON_DOOR();
-    // Không reset chế độ MANUAL/AUTO ở đây để giữ trạng thái
 }
 
 void StateMachine::_sendResponse(String json) {
@@ -361,34 +315,19 @@ void StateMachine::_parseSetTime(String timeStr) {
     if (sscanf(timeStr.c_str(), "%d:%d", &h, &m) == 2) {
         if (h < 0 || h > 23 || m < 0 || m > 59) return;
         
-        // Kiểm tra trùng lặp
         for (const auto& sch : _schedules) {
             if (sch.hour == h && sch.minute == m) return;
         }
         
-        // Giới hạn tối đa 10 lịch để tránh tràn bộ nhớ
         if (_schedules.size() >= 10) _schedules.erase(_schedules.begin());
         
-        // [FIX] Sửa lỗi push_back 3 tham số. Struct ScheduleTime chỉ có {hour, minute}
-        _schedules.push_back({h, m}); 
+        _schedules.push_back({h, m, 0});
         Serial.printf("[SM] Added schedule: %02d:%02d\n", h, m);
     }
 }
 
-// --- [QUAN TRỌNG] HÀM PHỤ TRỢ TÍNH TOÁN GRID ---
-long StateMachine::_getSecondsToNextGrid() {
-    unsigned long currentEpoch = _timeSync.getCurrentTime();
-    // Nếu chưa sync giờ (epoch nhỏ) -> coi như còn 60s
-    if (currentEpoch < 100000) return 60; 
-
-    long secondsInDay = currentEpoch % SECONDS_IN_DAY;
-    long nextGrid = ((secondsInDay / _gridIntervalSeconds) + 1) * _gridIntervalSeconds;
-    return nextGrid - secondsInDay;
-}
-
 bool StateMachine::_isTimeForGridMeasure() {
     unsigned long currentEpoch = _timeSync.getCurrentTime();
-    // Logic: Nếu vừa qua mốc Grid trong khoảng 5s đầu tiên -> Trigger
     return (currentEpoch > 100000) && ((currentEpoch % _gridIntervalSeconds) < 5);
 }
 
@@ -396,13 +335,10 @@ bool StateMachine::_isTimeForScheduledMeasure() {
     unsigned long currentEpoch = _timeSync.getCurrentTime();
     time_t raw = (time_t)currentEpoch;
     struct tm* t = localtime(&raw);
-    
-    // Tránh trigger nhiều lần trong cùng 1 phút
     if (t->tm_min == _lastTriggerMinute) return false;
-    
     for (const auto& s : _schedules) {
         if (t->tm_hour == s.hour && t->tm_min == s.minute) {
-            _lastTriggerMinute = t->tm_min; // Đánh dấu đã chạy
+            _lastTriggerMinute = t->tm_min;
             return true;
         }
     }
