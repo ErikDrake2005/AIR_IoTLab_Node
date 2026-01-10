@@ -93,7 +93,12 @@ private:
     void _processCycleLogic();
     void _finishCycle();
     void _stopAndResetCycle(); // Dùng chung cho cả Stop và Reset
-    
+    unsigned long _uartWakeupMillis; // Thời điểm bị đánh thức bởi UART
+    bool _isUartWakeupActive;
+    void _handleDeepSleepSequence();
+    void _tryLightSleep();
+    unsigned long _calculateNextWakeTime();
+    void _setBusyPin(bool isBusy);
     // Gửi dữ liệu
     void _sendResponse(String json);
 };

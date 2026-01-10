@@ -28,10 +28,6 @@ unsigned long TimeSync::getCurrentTime() {
     return _epochBase + ((millis() - _syncMillis) / 1000UL);
 }
 
-void TimeSync::requestTimeSync() {
-    // Hàm này sẽ được gọi từ main hoặc StateMachine
-}
-
 unsigned long TimeSync::_parseTimestamp(const String& timestamp) {
     int year, month, day, hour, minute, second;
     if (sscanf(timestamp.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6) {

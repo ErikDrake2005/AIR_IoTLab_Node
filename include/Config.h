@@ -2,8 +2,8 @@
 #include <Arduino.h>
 
 // ========== PINOUT ===========
-#define PIN_BATTERY  34      // Chân ADC đọc pin
-#define PIN_EYE  18
+#define PIN_SLEEP_STATUS 32  // LOW=Sleep, HIGH=Awake (Báo cho Bridge)
+#define PIN_WAKEUP_GPIO  33
 
 // ========== THIẾT BỊ ==========
 #define DEVICE_ID       "AIR_VL_01"
