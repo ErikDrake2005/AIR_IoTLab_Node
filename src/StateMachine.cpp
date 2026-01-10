@@ -297,7 +297,7 @@ void StateMachine::_startCycle() {
     _relay.OFF_DOOR();
     _relay.ON_FAN();
     Serial.println("[SM] Closing door & Waiting 10s...");
-    delay(10000); // Ổn định cơ khí
+    vTaskDelay(10000/portTICK_PERIOD_MS); // Ổn định cơ khí
     
     // Reset thời gian SAU KHI delay xong
     _cycleStartMillis = millis();
@@ -368,13 +368,12 @@ void StateMachine::_handleDeepSleepSequence() {
     Serial.println("[PWR] DeepSleep Seq Start");
     _relay.OFF_DOOR();
     delay(10000); // Wait 10s
-    
     JsonDocument ackDoc;
     ackDoc["type"] = "ack"; ackDoc["cmd"] = "EN:0";
+    ackDoc["timestamp"] = _timeSync.getCurrentTime();
     String out; serializeJson(ackDoc, out);
     _sendResponse(out);
     Serial.flush();
-    
     _setBusyPin(false);
     esp_deep_sleep_start();
 }
