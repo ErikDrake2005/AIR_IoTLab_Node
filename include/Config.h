@@ -1,6 +1,10 @@
 #pragma once
 #include <Arduino.h>
 
+// ========== PINOUT ===========
+#define PIN_BATTERY  34      // Chân ADC đọc pin
+#define PIN_EYE  18
+
 // ========== THIẾT BỊ ==========
 #define DEVICE_ID       "AIR_VL_01"
 #define DEFAULT_MEASURES_PER_DAY 4
@@ -34,5 +38,11 @@
 #define I2C_SDA_PIN   21
 #define I2C_SCL_PIN   22
 
+// ========== BATTERY & POWER SAVING ==========
+#define BAT_VOLTAGE_DIVIDER 2.0     
+#define BAT_MIN_VOLTAGE     3.7     // Ngưỡng NGẮT (Deep Sleep)
+#define BAT_RECOVERY_VOLTAGE 3.9    // <--- BẠN ĐANG THIẾU DÒNG NÀY
+#define BAT_CHECK_INTERVAL  60
 // ========== OTA ==========
 #define OTA_CHUNK_SIZE  1024
+
