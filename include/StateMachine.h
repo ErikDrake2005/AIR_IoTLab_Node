@@ -23,6 +23,7 @@ public:
     void handleCommand(const String& jsonCmd);
     void setStopFlag(bool flag);
     void processJsonCommand(const String& jsonStr);
+    
 
 private:
     Measurement& _meas;
@@ -55,6 +56,7 @@ private:
     void _calculateGridInterval();
     void _parseSetTime(String timeStr);
     bool _isTimeForGridMeasure();
+    void _sendDetailedAck(const char* cmd, const char* door, const char* fan, const char* state);
     bool _isTimeForScheduledMeasure();
     void _startCycle();       
     void _processCycleLogic();
