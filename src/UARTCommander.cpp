@@ -1,4 +1,5 @@
 #include "UARTCommander.h"
+#include "CRC32.h" // [BẮT BUỘC] Thêm thư viện CRC32
 
 UARTCommander* UARTCommander::instance = nullptr;
 
@@ -9,24 +10,39 @@ UARTCommander::UARTCommander() : _serial(nullptr) {
 
 void UARTCommander::begin(HardwareSerial& serial) {
     _serial = &serial; 
-    Serial.println("[UARTCommander] Initialized.");
+    Serial.println("[UART] Commander Init OK");
 }
 
-void UARTCommander::send(const String& data) {
-    if (_serial) _serial->println(data);
-    Serial.print("\n[UART_TX_LOG] Sent: "); 
-        Serial.println(data);
+void UARTCommander::send(const String& jsonStr) {
+    if (!_serial) return;
+
+    // [FIX] Tính CRC32 để khớp với Bridge
+    unsigned long crc = CRC32::calculate(jsonStr);
+
+    // Gửi theo định dạng: {"data":...}|CRC_HEX
+    _serial->print(jsonStr);
+    _serial->print("|");
+    _serial->println(String(crc, HEX));
+
+    Serial.print("[UART_TX] "); 
+    Serial.println(jsonStr);
 }
+
 void UARTCommander::pushToQueue(String data) {
     char buffer[512]; 
     memset(buffer, 0, 512);
-    strncpy(buffer, data.c_str(), 511);
+    // Copy an toàn
+    if (data.length() > 511) data = data.substring(0, 511);
+    strcpy(buffer, data.c_str());
+    
     if (xQueueSend(_commandQueue, &buffer, 0) != pdTRUE) {
-        Serial.println("[UARTCommander] Queue Full!");
+        Serial.println("[UART] Queue Full!");
     }
 }
 
-bool UARTCommander::hasCommand() { return uxQueueMessagesWaiting(_commandQueue) > 0; }
+bool UARTCommander::hasCommand() { 
+    return uxQueueMessagesWaiting(_commandQueue) > 0; 
+}
 
 String UARTCommander::getCommand() {
     char buffer[512];
@@ -36,5 +52,6 @@ String UARTCommander::getCommand() {
     return "";
 }
 
-void UARTCommander::clearCommand() { xQueueReset(_commandQueue); }
-void UARTCommander::uartISR() { }
+void UARTCommander::clearCommand() { 
+    xQueueReset(_commandQueue); 
+}

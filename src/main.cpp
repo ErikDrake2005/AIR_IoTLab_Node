@@ -12,133 +12,111 @@
 #include "RS485Master.h"
 #include "SHT31Sensor.h"
 #include "CRC32.h" 
+
 SemaphoreHandle_t sysMutex;
 HardwareSerial rs485Serial(2);
 HardwareSerial commandSerial(1);
-RS485Master rs485(rs485Serial);
+
+// Khởi tạo Modules
+RS485Master rs485(rs485Serial, PIN_RS485_DE);
 SHT31Sensor sht31;
 RelayController relay;
-JsonFormatter jsonFormatter;
+JsonFormatter jsonFormatter; // Vẫn cần cho Measurement dùng
 Measurement measurement(rs485, sht31, jsonFormatter);
 UARTCommander uartCommander; 
 TimeSync timeSync(jsonFormatter);
+
+// [FIX] Constructor này KHÔNG truyền jsonFormatter nữa (nó tự tạo bên trong)
 StateMachine stateMachine(measurement, relay, uartCommander, timeSync);
+
+// TASK NHẬN UART VÀ CHECK CRC
 void uartRxTask(void* pvParameters) {
     static char rxBuffer[2048]; 
     static int rxIndex = 0;
     while (commandSerial.available()) commandSerial.read();
-    Serial.println("[UART Task] Ready to receive commands...");
+    Serial.println("[UART RX] Listening...");
+
     for (;;) {
-        // Đọc dữ liệu đến
         while (commandSerial.available()) {
             char c = commandSerial.read();
             if (c == '\n') {
                 rxBuffer[rxIndex] = 0;
-                String jsonCmd = String(rxBuffer);
-                jsonCmd.trim();
-                if (jsonCmd.length() > 0) {
-                    Serial.print("[RX] "); Serial.println(jsonCmd);
-                    if (jsonCmd.indexOf("stop_measure") >= 0) {
-                        Serial.println("[CMD] !!! FAST STOP TRIGGERED !!!");
-                        if (xSemaphoreTake(sysMutex, 100 / portTICK_PERIOD_MS) == pdTRUE) {
-                            stateMachine.setStopFlag(true); 
-                            xSemaphoreGive(sysMutex);
+                String raw = String(rxBuffer); raw.trim(); rxIndex = 0;
+                
+                if (raw.length() > 0) {
+                    // Check CRC: {"cmd":...}|ABC12345
+                    int sep = raw.lastIndexOf('|');
+                    if (sep > 0) {
+                        String json = raw.substring(0, sep);
+                        String crcS = raw.substring(sep + 1);
+                        unsigned long cal = CRC32::calculate(json);
+                        unsigned long rec = strtoul(crcS.c_str(), NULL, 16);
+                        
+                        if (cal == rec) {
+                            Serial.print("[RX OK] "); Serial.println(json);
+                            // Ưu tiên xử lý lệnh Stop
+                            if (json.indexOf("stop_measure") >= 0 || json.indexOf("\"EN\":0") >= 0) {
+                                stateMachine.setStopFlag(true);
+                            }
+                            // Đẩy vào Logic
+                            if (xSemaphoreTake(sysMutex, 2000) == pdTRUE) {
+                                stateMachine.handleCommand(json);
+                                xSemaphoreGive(sysMutex);
+                            }
                         } else {
-                            Serial.println("[WARN] Force Stop without Mutex!");
-                            stateMachine.setStopFlag(true); 
+                            Serial.printf("[RX ERR] CRC Fail. Cal:%X Rec:%X\n", cal, rec);
                         }
                     }
-                    if (xSemaphoreTake(sysMutex, 3000 / portTICK_PERIOD_MS) == pdTRUE) {
-                        stateMachine.handleCommand(jsonCmd);
-                        xSemaphoreGive(sysMutex);
-                    } else {
-                        Serial.println("[CMD ERR] System Busy -> Dropped Cmd");
-                        String errJson = jsonFormatter.createError("SYSTEM_BUSY_TIMEOUT");
-                        uartCommander.pushToQueue(errJson);
-                    }
                 }
-                rxIndex = 0; 
             } else {
-                if (rxIndex < 2047) {
-                    rxBuffer[rxIndex++] = c;
-                } else {
-                    rxIndex = 0;
-                    Serial.println("[UART ERR] Buffer Overflow -> Reset");
-                }
+                if (rxIndex < 2047) rxBuffer[rxIndex++] = c; else rxIndex = 0;
             }
         }
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
-// --- TASK 2: MÁY TRẠNG THÁI (CORE LOGIC) ---
+// TASK LOGIC CHÍNH
 void machineTask(void* pvParameters) {
-    unsigned long lastDebugTime = 0;
-
-    Serial.println("[Machine Task] Started...");
-
+    Serial.println("[Logic Task] Started");
     for (;;) {
+        // 1. Chạy state machine
         if (xSemaphoreTake(sysMutex, portMAX_DELAY) == pdTRUE) {
             stateMachine.update();
             xSemaphoreGive(sysMutex);
         }
+        // 2. Gửi dữ liệu UART (Queue)
         if (uartCommander.hasCommand()) {
-            String packet = uartCommander.getCommand();
-            if (packet.length() > 0) {
-                commandSerial.print(packet);
-                commandSerial.println(); 
-                Serial.print("[UART_TX] Sent: ");
-                Serial.println(packet);
+            String pkt = uartCommander.getCommand();
+            if (pkt.length() > 0) {
+                commandSerial.println(pkt);
+                Serial.print("[TX] "); Serial.println(pkt);
             }
-        }
-
-        // 2. [DEBUG] Heartbeat
-        if (millis() - lastDebugTime > 10000) {
-            lastDebugTime = millis();
-            Serial.printf("[MAIN] Heartbeat. Heap: %d bytes\n", ESP.getFreeHeap());
         }
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 
 void setup() {
-    // 1. Cấu hình hệ thống
     setCpuFrequencyMhz(80); 
     Serial.begin(115200);
-    Serial.println("\n\n=== [BOOT] AIR_VL_01 SYSTEM STARTING ===");
-
-    // -----------------------------------------------------------
-    // [FIX QUAN TRỌNG] KHỞI ĐỘNG I2C TRƯỚC KHI GỌI CẢM BIẾN
-    // -----------------------------------------------------------
+    Serial.println("\n=== [BOOT] AIR_VL_01 ===");
+    
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
-    Serial.printf("[I2C] Bus Started on SDA=%d, SCL=%d\n", I2C_SDA_PIN, I2C_SCL_PIN);
-    Serial.print("[I2C] Scanning SHT31... ");
-    Wire.beginTransmission(0x44);
-    if (Wire.endTransmission() == 0) Serial.println("FOUND at 0x44 (OK)");
-    else {
-        Wire.beginTransmission(0x45);
-        if (Wire.endTransmission() == 0) Serial.println("FOUND at 0x45 (OK)");
-        else Serial.println("ERROR: NOT FOUND! Check wiring.");
-    }
-    relay.begin();
+    if(!sht31.begin()) Serial.println("[SHT31] Error/Custom Addr");
+    
+    relay.begin(); 
     rs485.begin();
-    sht31.begin(); 
-    commandSerial.setRxBufferSize(4096); 
+    
+    commandSerial.setRxBufferSize(2048); 
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     uartCommander.begin(commandSerial);
-
-    // 3. Tạo Mutex
+    
     sysMutex = xSemaphoreCreateMutex();
-    if (sysMutex == NULL) {
-        Serial.println("!!! ERROR: Failed to create Mutex !!!");
-        while(1);
-    }
     stateMachine.begin();
-    xTaskCreatePinnedToCore(uartRxTask, "UART_RX", 8192, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(machineTask, "MACHINE", 8192, NULL, 1, NULL, 1);
-    Serial.println("[BOOT] Tasks Created. System Running.");
+    
+    xTaskCreatePinnedToCore(uartRxTask, "UART_RX", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(machineTask, "LOGIC", 8192, NULL, 1, NULL, 1);
 }
 
-void loop() {
-    vTaskDelete(NULL);
-}
+void loop() { vTaskDelete(NULL); }
