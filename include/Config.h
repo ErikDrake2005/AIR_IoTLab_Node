@@ -43,6 +43,16 @@
 #define BAT_MIN_VOLTAGE     3.7     // Ngưỡng NGẮT (Deep Sleep)
 #define BAT_RECOVERY_VOLTAGE 3.9
 #define BAT_CHECK_INTERVAL  60
+
+// ========== TIME SYNC AUTO-REQUEST ==========
+#define TIME_SYNC_INTERVAL_SECONDS  3600  // Request time sync every 1 hour
+#define TIME_SYNC_RETRY_INTERVAL    30    // Retry after 30 seconds if no response
+
+// ========== RESPONSE TYPES ==========
+// Used in JSON responses: "type": "data" or "type": "machine_status"
+#define RESP_TYPE_DATA            "data"
+#define RESP_TYPE_MACHINE_STATUS  "machine_status"
+
 // ========== OTA ==========
 #define OTA_CHUNK_SIZE  1024
 
