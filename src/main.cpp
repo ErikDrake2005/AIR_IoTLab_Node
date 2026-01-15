@@ -189,6 +189,16 @@ void setup() {
     if(!sht31.begin()) Serial.println("[SHT31] Error/Custom Addr");
     
     relay.begin(); 
+    
+    // ===== [INIT ON BOOT] Mở cửa, tắt quạt, ngưng đo =====
+    Serial.println("[BOOT] Initialize relays: DOOR ON, FAN OFF, MEASURE OFF");
+    relay.ON_DOOR();    // Mở cửa
+    delay(10);
+    relay.OFF_FAN();    // Tắt quạt
+    delay(10);
+    relay.OFF();        // Ngưng đo (turn off measurement)
+    Serial.println("[BOOT] Relay init complete");
+    
     rs485.begin();
     
     // [QUAN TRỌNG] Tăng buffer cho UART 1 lên 4KB để chịu tải 921600
@@ -199,9 +209,11 @@ void setup() {
     sysMutex = xSemaphoreCreateMutex();
     stateMachine.begin();
     
-    // Cấp nhiều Stack hơn cho Task RX
-    xTaskCreatePinnedToCore(uartRxTask, "RX_FAST", 6144, NULL, 2, NULL, 0); 
-    xTaskCreatePinnedToCore(machineTask, "MAIN", 8192, NULL, 1, NULL, 1);
+    // [FIX] Tăng Stack để tránh overflow khi xử lý JsonDocument
+    // RX_FAST: 12KB (từ 6KB) - xử lý parse + handleCommand + JsonDocument
+    // MAIN: 16KB (từ 8KB) - xử lý _sendMachineStatus() với JsonDocument
+    xTaskCreatePinnedToCore(uartRxTask, "RX_FAST", 12288, NULL, 2, NULL, 0); 
+    xTaskCreatePinnedToCore(machineTask, "MAIN", 16384, NULL, 1, NULL, 1);
 }
 
 void loop() { vTaskDelete(NULL); }

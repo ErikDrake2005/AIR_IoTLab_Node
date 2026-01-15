@@ -94,6 +94,7 @@ private:
     // Wakeup Variables
     bool _isUartWakeupActive;
     unsigned long _uartWakeupMillis;
+    bool _pendingDeepSleep;  // Flag to execute deep sleep after status update
     
     // Auto Time Sync Variables
     unsigned long _lastTimeSyncRequest;  // Timestamp of last time_req sent
@@ -109,7 +110,7 @@ private:
     void _handleEnCommand(int enValue);
     void _handleTimeSync(unsigned long epochTime);
     void _handleModeCommand(const String& mode);
-    void _handleTimeFunctions(const CommandData& cmd);
+    void _handleTimeFunctions(const CommandData& cmd);  // Legacy, may deprecate
     void _handleMeasurementCommand(const String& cmd);
     void _handleRelayControl(const CommandData& cmd);
 

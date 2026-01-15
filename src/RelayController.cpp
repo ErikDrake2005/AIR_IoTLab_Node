@@ -34,3 +34,15 @@ void RelayController::OFF_FAN() {
     digitalWrite(FANA, LOW); 
     digitalWrite(FAN1, LOW); 
 }
+
+// Turn off measurement (both relays off)
+void RelayController::ON() { 
+    digitalWrite(CTL_ON_RELAY, HIGH);
+    digitalWrite(CTL_OFF_RELAY, HIGH); 
+}
+
+// Turn off measurement (both relays off)
+void RelayController::OFF() { 
+    digitalWrite(CTL_ON_RELAY, LOW);
+    digitalWrite(CTL_OFF_RELAY, LOW); 
+}
