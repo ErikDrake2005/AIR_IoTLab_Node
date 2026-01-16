@@ -2,50 +2,20 @@
 #define STATE_MACHINE_H
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 #include <vector>
-
-#include "Measurement.h"
+#include "Measurement.h"      
 #include "RelayController.h"
 #include "UARTCommander.h"
 #include "TimeSync.h"
-#include "JsonFormatter.h"
 #include "CommandProcessor.h"
-#include "Config.h" // Đảm bảo có file này chứa PIN definitions
+#include "JsonFormatter.h"    
+#include "driver/uart.h"
+#include "Config.h"           
+#include "CommonTypes.h" // <--- BẮT BUỘC PHẢI CÓ FILE NÀY
 
-// Định nghĩa các trạng thái máy đo
-enum MachineState {
-    STATE_IDLE,
-    STATE_PREPARING,
-    STATE_WAIT_MEASURE_1,
-    STATE_WAIT_MEASURE_2,
-    STATE_WAIT_MEASURE_3,
-    STATE_FINISHING,
-    STATE_MANUAL_LOOP
-};
-
-enum OperationMode {
-    MANUAL,
-    AUTO
-};
-
-struct Schedule {
+struct ScheduleTime {
     int hour;
     int minute;
-    int second;
-};
-
-// Machine Status Struct - Sent whenever state changes
-struct MachineStatus {
-    String type;           // "machine_status"
-    String deviceId;       // Device identifier
-    String door;           // "open" or "close"
-    String fan;            // "on" or "off"
-    String mode;           // "auto" or "manual"
-    String measuring;      // "YES" or "NO"
-    String cycleManual;    // Current manual cycle in minutes
-    String measuresPerDay; // Current measures per day
-    unsigned long timestamp; // Current epoch time
 };
 
 class StateMachine {
@@ -53,91 +23,73 @@ public:
     StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync);
     void begin();
     void update();
-    
-    // --- Public Methods ---
-    void handleCommand(String jsonStr);
-    void setStopFlag(bool flag);
+    void processRawCommand(String rawStr);
+    void setStopFlag(bool flag) { _stopRequested = flag; }
 
 private:
-    // Modules
+    // --- MODULES ---
     Measurement& _meas;
     RelayController& _relay;
     UARTCommander& _cmd;
     TimeSync& _timeSync;
+    CommandProcessor _cmdProcessor;
+    JsonFormatter _jsonFormatter; 
 
-    // State Variables
-    OperationMode _mode;
-    MachineState _cycleState;
+    // --- QUẢN LÝ TRẠNG THÁI (MỚI) ---
+    MachineStatus _status; // <--- SỬA LỖI: Biến _status chứa toàn bộ mode, fan, door...
+    CycleState _cycleState;
+    
     bool _stopRequested;
     
-    // Relay Status
-    bool _isDoorOpen;
-    bool _isFanOn;
-    MachineStatus _lastStatus;  // Track for change detection
-    bool _statusChanged;        // Flag to send status update
+    // --- THỜI GIAN & LỊCH TRÌNH ---
+    unsigned long _gridInterval;
+    unsigned long _manualIntervalMs; // Vẫn giữ để tính toán nhanh
+    unsigned long _nextManualRun;
     
-    // Time & Config Variables
-    int _measuresPerDay;
-    unsigned long _gridIntervalSeconds;
-    std::vector<Schedule> _schedules;
-    int _lastTriggerMinute;
+    unsigned long _cycleStartMs;
+    unsigned long _nextTimeSync;
     
-    // Cycle Variables
-    unsigned long _cycleStartMillis;
-    unsigned long _currentManualInterval;
-    unsigned long _nextManualMeasureMillis;
-    int _measureCount;
+    // --- SLEEP WAKEUP ---
+    bool _isUartWakeup;
+    unsigned long _uartWakeupMs;
     
-    // Data buffer cho 3 giai đoạn đo
-    MeasurementData _miniData[3];
+    std::vector<ScheduleTime> _schedules;
+    int _lastTriggerMin;
+    
+    // --- BUFFER DỮ LIỆU ĐO (Cho Auto Cycle) ---
+    MeasurementData _miniData[3]; 
 
-    // Wakeup Variables
-    bool _isUartWakeupActive;
-    unsigned long _uartWakeupMillis;
-    bool _pendingDeepSleep;  // Flag to execute deep sleep after status update
+    // --- CÁC HÀM NỘI BỘ (INTERNAL METHODS) ---
+    void _applyCommand(CommandData& cmd);
     
-    // Auto Time Sync Variables
-    unsigned long _lastTimeSyncRequest;  // Timestamp of last time_req sent
-    unsigned long _nextTimeSyncTime;     // When to request next sync
-    bool _waitingForTimeSync;            // Waiting for Gateway response
+    // Logic Auto (3 Mini-cycles)
+    void _startAutoCycle();     
+    void _processAutoCycle();  
+    void _finishAutoCycle(bool aborted); 
+    
+    // Logic Manual (Single Shot)
+    void _performManualMeasurement();
 
-    // --- Private Methods (Internal Logic) ---
-    void _ctrlDoor(bool open);
-    void _ctrlFan(bool on);
+    // Hàm chung
+    void _resetCycle();
+    void _resetMiniData(); 
     
-    // Command Processing with Priority
-    void _processCommandByPriority(const CommandData& cmd);
-    void _handleEnCommand(int enValue);
-    void _handleTimeSync(unsigned long epochTime);
-    void _handleModeCommand(const String& mode);
-    void _handleTimeFunctions(const CommandData& cmd);  // Legacy, may deprecate
-    void _handleMeasurementCommand(const String& cmd);
-    void _handleRelayControl(const CommandData& cmd);
-
-    void _processCycleLogic();
-    void _startCycle();
-    void _finishCycle();
-    void _stopAndResetCycle();
+    // Sleep logic
+    void _handleLightSleep();
+    unsigned long _calcSleepTime();
+    void _enterDeepSleep();
     
-    // Sleep & Power
-    void _tryLightSleep();
-    void _handleDeepSleepSequence();
-    unsigned long _calculateNextWakeTime();
-    void _setBusyPin(bool isBusy);
+    // Helpers
+    void _recalcGrid();
+    bool _checkSchedule();
+    bool _checkGrid();
     
-    // Time Sync Auto-Request
-    void _checkAndRequestTimeSync();  // Called periodically from update()
-    void _sendTimeSyncRequest();      // Send time_req to Gateway
+    void _sendMachineStatus();
+    void _requestTimeSync();
+    void _sendPacket(String json);
     
-    // Utils
-    void _sendMachineStatus();        // Send status whenever changed
-    void _updateMachineStatus();      // Internal: update status struct
-    void _sendResponse(String json);
-    
-    void _calculateGridInterval();
-    void _parseSetTime(String tStr);
-    bool _isTimeForGridMeasure();
-    bool _isTimeForScheduledMeasure();
+    void _setDoor(bool open);
+    void _setFan(bool on);
 };
 
 #endif

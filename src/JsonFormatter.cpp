@@ -4,11 +4,20 @@
 extern TimeSync timeSync; 
 
 JsonFormatter::JsonFormatter() {}
-
+String JsonFormatter::createAck(String status) {
+    JsonDocument doc;
+    doc["type"] = "ACK";
+    doc["status"] = status;
+    
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
 unsigned long JsonFormatter::getTimestamp() {
     return timeSync.getCurrentTime();
 }
-float roundVal(float val) {
+
+float round2(float val) {
     if (val < 0) return val; 
     return (int)(val * 100 + 0.5) / 100.0;
 }
@@ -16,32 +25,34 @@ float roundVal(float val) {
 String JsonFormatter::createDataJson(float ch4, float co, float alc, float nh3, float h2, float temp, float hum) {
     JsonDocument doc;
     doc["type"] = "data";
-    doc["timestamp"] = getTimestamp();
-    doc["ch4"] = roundVal(ch4);
-    doc["co"]  = roundVal(co);
-    doc["alc"] = roundVal(alc);
-    doc["nh3"] = roundVal(nh3);
-    doc["h2"]  = roundVal(h2);
-    doc["temp"] = roundVal(temp);
-    doc["hum"]  = roundVal(hum);
+    JsonObject content = doc["content"].to<JsonObject>();
+    content["temp"] = round2(temp);
+    content["hum"]  = round2(hum);
+    content["co"]   = round2(co);
+    content["nh3"]  = round2(nh3);
+    content["h2"]   = round2(h2);
+    content["c2h5oh"] = round2(alc); // alc mapped to c2h5oh
+    content["ch4"]  = round2(ch4);
+    content["timestamp"] = getTimestamp();
+    
     String output;
     serializeJson(doc, output);
     return output;
 }
 
-String JsonFormatter::createAck(const String& cmd) {
+String JsonFormatter::createMachineStatus(String mode, String measureStatus, String door, String fan, int manualCycle, int measuresPerDay, float batt) {
     JsonDocument doc;
-    doc["type"] = "ack";
-    doc["cmd"] = cmd;
-    String output;
-    serializeJson(doc, output);
-    return output;
-}
-
-String JsonFormatter::createError(const String& msg) {
-    JsonDocument doc;
-    doc["type"] = "error";
-    doc["msg"] = msg;
+    doc["type"] = "machine_status";
+    JsonObject content = doc["content"].to<JsonObject>();
+    content["mode"] = mode;                 
+    content["measure_status"] = measureStatus; 
+    content["door"] = door;                 
+    content["fan"] = fan;                   
+    content["saved_manual_cycle"] = manualCycle;
+    content["saved_daily_meansure"] = measuresPerDay;
+    content["timestamp"] = getTimestamp();
+    // batt để null hoặc không gửi nếu Node không đo pin
+    
     String output;
     serializeJson(doc, output);
     return output;
@@ -50,6 +61,15 @@ String JsonFormatter::createError(const String& msg) {
 String JsonFormatter::createTimeSyncRequest() {
     JsonDocument doc;
     doc["type"] = "time_req";
+    doc["content"] = nullptr;
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String JsonFormatter::createWakeupAck() {
+    JsonDocument doc;
+    doc["WakeUp"] = "Done";
     String output;
     serializeJson(doc, output);
     return output;

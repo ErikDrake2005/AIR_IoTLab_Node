@@ -1,16 +1,21 @@
 #pragma once
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "Config.h"
 
 class JsonFormatter {
 public:
     JsonFormatter();
-    String createDataJson(float ch4, float co, float alc, float nh3, float h2, float temp, float hum);
-    String createAck(const String& cmd);
-    String createError(const String& msg);
-    String createTimeSyncRequest();
-
-private:
     unsigned long getTimestamp();
+
+    // { "type": "data", "content": { ... } }
+    String createDataJson(float ch4, float co, float alc, float nh3, float h2, float temp, float hum);
+    String createAck(String status);
+    // { "type": "machine_status", "content": { ... } }
+    String createMachineStatus(String mode, String measureStatus, String door, String fan, int manualCycle, int measuresPerDay, float batt);
+    
+    // { "type": "time_req", "content": null }
+    String createTimeSyncRequest();
+    
+    // { "WakeUp": "Done" } -> Đặc biệt cho Handshake
+    String createWakeupAck();
 };

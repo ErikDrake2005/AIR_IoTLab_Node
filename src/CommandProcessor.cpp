@@ -1,121 +1,112 @@
 #include "CommandProcessor.h"
+#include "CRC32.h"
 
-CommandProcessor::CommandProcessor() {
+CommandProcessor::CommandProcessor() {}
+
+bool CommandProcessor::verifyCRC(const String& rawInput, String& jsonOutput) {
+    int pipeIndex = rawInput.lastIndexOf('|');
+    if (pipeIndex == -1) return false;
+
+    String dataPart = rawInput.substring(0, pipeIndex);
+    String crcPart = rawInput.substring(pipeIndex + 1);
+    crcPart.trim();
+    
+    uint32_t calcCRC = CRC32::calculate(dataPart);
+    uint32_t recvCRC = strtoul(crcPart.c_str(), NULL, 16);
+
+    if (calcCRC == recvCRC) {
+        jsonOutput = dataPart;
+        return true;
+    }
+    return false;
 }
 
-CommandData CommandProcessor::parseCommand(const String& jsonStr) {
-    CommandData cmd = {};
-    
+CommandData CommandProcessor::parse(const String& rawInput) {
+    CommandData cmd; // Struct từ CommonTypes.h
+    String jsonStr;
+
+    // 1. Verify CRC
+    if (!verifyCRC(rawInput, jsonStr)) {
+        return cmd; // isValid mặc định là false
+    }
+
+    // 2. Deserialize JSON
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonStr);
-    if (error) {
-        Serial.printf("[CMD] JSON Parse Error: %s\n", error.c_str());
+    if (error) return cmd;
+
+    cmd.isValid = true;
+
+    // 3. --- BẮT ĐẦU PARSE THEO CẤU TRÚC MỚI ---
+    
+    // 3.1 Lấy NID và Enable (Lớp ngoài cùng)
+    // [FIX LỖI WARNING]: Thay containsKey("en") bằng !doc["en"].isNull()
+    if (!doc["en"].isNull()) {
+        cmd.enable = (doc["en"].as<int>() == 1);
+    }
+    // Lưu ý: Node thực ra không cần quan tâm NID vì Bridge đã lọc rồi.
+
+    // 3.2 Vào lớp "req" (Yêu cầu)
+    JsonObject req = doc["req"];
+    if (req.isNull()) {
+        // Nếu không có req, có thể chỉ là lệnh ngủ từ Bridge (en=0)
+        // Nếu enable = false (0) -> Chuyển sang mode SLEEP
+        if (cmd.enable == false) cmd.setMode = MODE_SLEEP;
         return cmd;
     }
+
+    // 3.3 Lấy "set" (Chế độ)
+    String setStr = req["set"].as<String>();
+    if (setStr == "AUTO") cmd.setMode = MODE_AUTO;
+    else if (setStr == "MANUAL") cmd.setMode = MODE_MANUAL;
+    else if (setStr == "TIMESTAMP") cmd.setMode = MODE_TIMESTAMP;
+    else if (setStr == "SLEEP") cmd.setMode = MODE_SLEEP;
+
+    // 3.4 Lấy "cmd" (Tham số chi tiết)
+    JsonVariant cmdVar = req["cmd"];
     
-    // Priority 0: EN (Sleep/Wake)
-    if (!doc["EN"].isNull()) {
-        cmd.hasEnSleep = true;
-        cmd.enValue = doc["EN"].as<int>();
+    // --- TRƯỜNG HỢP 1: TIMESTAMP (cmd là số long) ---
+    if (cmd.setMode == MODE_TIMESTAMP) {
+        if (cmdVar.is<unsigned long>()) {
+            cmd.timestamp = cmdVar.as<unsigned long>();
+        }
+        return cmd; // Xong
     }
-    
-    // Priority 1: Time Sync (timestamp)
-    if (!doc["timestamp"].isNull()) {
-        cmd.hasTimeSync = true;
-        cmd.epochTime = doc["timestamp"].as<unsigned long>();
-    }
-    
-    // Priority 2: Mode
-    if (!doc["mode"].isNull()) {
-        cmd.hasMode = true;
-        cmd.mode = doc["mode"].as<String>();
-    } else if (!doc["set_mode"].isNull()) {
-        cmd.hasMode = true;
-        cmd.mode = doc["set_mode"].as<String>();
-    }
-    
-    // Priority 3: Time Functions
-    if (!doc["cycle_manual"].isNull()) {
-        cmd.hasCycleManual = true;
-        cmd.cycleManualMin = doc["cycle_manual"].as<int>();
-    }
-    
-    if (!doc["measures_per_day"].isNull()) {
-        cmd.hasMeasuresPerDay = true;
-        cmd.measuresPerDay = doc["measures_per_day"].as<int>();
-    }
-    
-    if (!doc["schedules"].isNull() && doc["schedules"].is<JsonArray>()) {
-        cmd.hasSchedules = true;
-        cmd.schedulesArray = doc["schedules"].as<JsonArray>();
-    }
-    
-    // Priority 4: Measurement Control
-    if (!doc["set_state"].isNull()) {
-        String state = doc["set_state"].as<String>();
-        if (state == "measure" || state == "start") {
-            cmd.hasMeasurement = true;
-            cmd.measureCmd = "start";
-        } else if (state == "stop") {
-            cmd.hasMeasurement = true;
-            cmd.measureCmd = "stop";
+
+    // --- TRƯỜNG HỢP 2: AUTO / MANUAL (cmd là Object) ---
+    if (cmdVar.is<JsonObject>()) {
+        JsonObject cmdObj = cmdVar.as<JsonObject>();
+
+        // Lấy cấu hình chung
+        if (!cmdObj["transmissionIntervalMinutes"].isNull()) {
+            cmd.manualInterval = cmdObj["transmissionIntervalMinutes"].as<int>();
+        }
+
+        // Vào lớp "do" (Hành động)
+        JsonObject doObj = cmdObj["do"];
+        if (!doObj.isNull()) {
+            cmd.hasActions = true;
+            
+            // Lệnh Auto
+            if (!doObj["measurementCount"].isNull()) {
+                cmd.autoMeasureCount = doObj["measurementCount"].as<int>();
+            }
+            if (!doObj["startTime"].isNull()) {
+                cmd.autoStartTime = doObj["startTime"].as<String>();
+            }
+
+            // Lệnh Manual / Tức thời
+            if (!doObj["chamberStatus"].isNull()) {
+                cmd.chamberStatus = doObj["chamberStatus"].as<String>();
+            }
+            if (!doObj["doorStatus"].isNull()) {
+                cmd.doorStatus = doObj["doorStatus"].as<String>();
+            }
+            if (!doObj["fanStatus"].isNull()) {
+                cmd.fanStatus = doObj["fanStatus"].as<String>();
+            }
         }
     }
-    
-    // Priority 5: Relay Control - Door
-    if (!doc["set_door"].isNull()) {
-        cmd.hasDoor = true;
-        cmd.doorCmd = doc["set_door"].as<String>();
-    } else if (!doc["open"].isNull() && doc["open"].as<int>() == 1) {
-        cmd.hasDoor = true;
-        cmd.doorCmd = "open";
-    } else if (!doc["close"].isNull() && doc["close"].as<int>() == 1) {
-        cmd.hasDoor = true;
-        cmd.doorCmd = "close";
-    }
-    
-    // Priority 5: Relay Control - Fan
-    if (!doc["set_fans"].isNull()) {
-        cmd.hasFan = true;
-        cmd.fanCmd = doc["set_fans"].as<String>();
-    } else if (!doc["fan"].isNull()) {
-        cmd.hasFan = true;
-        cmd.fanCmd = (doc["fan"].as<int>() == 1) ? "on" : "off";
-    } else if (!doc["set_fan"].isNull()) {
-        cmd.hasFan = true;
-        cmd.fanCmd = doc["set_fan"].as<String>();
-    }
-    
+
     return cmd;
-}
-
-bool CommandProcessor::isValidCommand(const JsonDocument& doc) {
-    return (!doc["EN"].isNull() ||
-            !doc["timestamp"].isNull() ||
-            !doc["mode"].isNull() ||
-            !doc["set_mode"].isNull() ||
-            !doc["cycle_manual"].isNull() ||
-            !doc["measures_per_day"].isNull() ||
-            !doc["schedules"].isNull() ||
-            !doc["set_state"].isNull() ||
-            !doc["set_door"].isNull() ||
-            !doc["open"].isNull() ||
-            !doc["close"].isNull() ||
-            !doc["set_fans"].isNull() ||
-            !doc["set_fan"].isNull() ||
-            !doc["fan"].isNull());
-}
-
-String CommandProcessor::extractString(const JsonDocument& doc, const char* key, const String& defaultVal) {
-    if (!doc[key].isNull()) {
-        return doc[key].as<String>();
-    }
-    return defaultVal;
-}
-
-int CommandProcessor::extractInt(const JsonDocument& doc, const char* key, int defaultVal) {
-    if (!doc[key].isNull()) {
-        return doc[key].as<int>();
-    }
-    return defaultVal;
 }
