@@ -2,76 +2,120 @@
 #include "CRC32.h"
 #include "PacketDef.h"
 
+// Khai báo instance
 UARTCommander* UARTCommander::instance = nullptr;
 
 UARTCommander::UARTCommander() : _serial(nullptr) {
     instance = this;
-    _commandQueue = xQueueCreate(20, 512); 
+    // Tạo hàng đợi
+    _txQueue = xQueueCreate(20, sizeof(UartTxMessage)); 
+    _rxQueue = xQueueCreate(20, sizeof(UartRxMessage)); 
 }
 
 void UARTCommander::begin(HardwareSerial& serial) {
-    _serial = &serial; 
-    Serial.println("[UART] Commander Init OK");
-}
-
-// === JSON FORMAT (Backward Compatible) ===
-void UARTCommander::send(const String& jsonStr) {
-    if (!_serial) return;
-
-    unsigned long crc = CRC32::calculate(jsonStr);
-    _serial->print(jsonStr);
-    _serial->print("|");
-    _serial->println(String(crc, HEX));
-
-    Serial.print("[UART_TX JSON] "); 
-    Serial.println(jsonStr);
-}
-
-// === BINARY FORMAT (Efficient - PacketDef) ===
-void UARTCommander::sendBinary(JsonDocument& doc) {
-    if (!_serial) return;
-
-    // Encode JSON -> Binary
-    uint8_t buffer[256];
-    int len = PacketUtils::encodeJsonToBinary(doc, buffer, 256);
+    _serial = &serial;
     
-    if (len <= 0) {
-        Serial.println("[ERR] Binary encode failed!");
+    // Task TX
+    xTaskCreatePinnedToCore(txTask, "UART_TX", 4096, this, 1, NULL, 1);
+    // Task RX
+    xTaskCreatePinnedToCore(rxTask, "UART_RX", 4096, this, 1, NULL, 1);
+
+    Serial.println("[UART] Commander Init (Queue & Tasks Ready)");
+}
+
+// ======================= TX (GỬI ĐI) =======================
+
+void UARTCommander::txTask(void* pvParameters) {
+    UARTCommander* self = (UARTCommander*)pvParameters;
+    UartTxMessage msg;
+
+    for (;;) {
+        if (xQueueReceive(self->_txQueue, &msg, portMAX_DELAY) == pdTRUE) {
+            if (self->_serial) {
+                // 1. Gửi dữ liệu ra UART
+                self->_serial->write(msg.buffer, msg.length);
+                self->_serial->write('\n'); // Kết thúc gói
+                
+                // 2. Log Debug
+                Serial.print("[UART TX] >> ");
+                Serial.write(msg.buffer, msg.length);
+                Serial.println();
+
+                // 3. Delay bắt buộc cho Bridge xử lý
+                vTaskDelay(10 / portTICK_PERIOD_MS); 
+            }
+        }
+    }
+}
+
+void UARTCommander::enqueueTx(const uint8_t* data, size_t len, const char* debugTag) {
+    if (len > 511) { // Buffer size check
+        Serial.println("[UART ERR] Packet too large!");
         return;
     }
-
-    // Send binary data
-    _serial->write(buffer, len);
-    _serial->write('\n');  // Terminator
+    UartTxMessage msg;
+    memcpy(msg.buffer, data, len);
+    msg.length = len;
     
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-    Serial.printf("[UART_TX BIN] %d bytes: %s\n", len, jsonStr.c_str());
-}
-
-void UARTCommander::pushToQueue(String data) {
-    char buffer[512]; 
-    memset(buffer, 0, 512);
-    if (data.length() > 511) data = data.substring(0, 511);
-    strcpy(buffer, data.c_str());
-    
-    if (xQueueSend(_commandQueue, &buffer, 0) != pdTRUE) {
-        Serial.println("[UART] Queue Full!");
+    if(xQueueSend(_txQueue, &msg, 0) != pdTRUE) {
+        Serial.println("[UART ERR] TX Queue Full!");
     }
 }
 
-bool UARTCommander::hasCommand() { 
-    return uxQueueMessagesWaiting(_commandQueue) > 0; 
+void UARTCommander::send(const String& jsonStr) {
+    // Tính CRC
+    unsigned long crc = CRC32::calculate(jsonStr);
+    String packet = jsonStr + "|" + String(crc, HEX);
+    enqueueTx((const uint8_t*)packet.c_str(), packet.length(), "JSON");
+}
+
+// ======================= RX (NHẬN VỀ) =======================
+
+void UARTCommander::rxTask(void* pvParameters) {
+    UARTCommander* self = (UARTCommander*)pvParameters;
+    String inputBuffer = "";
+    inputBuffer.reserve(512);
+
+    for (;;) {
+        if (self->_serial && self->_serial->available()) {
+            while (self->_serial->available()) {
+                char c = (char)self->_serial->read();
+                
+                if (c == '\n') {
+                    if (inputBuffer.length() > 0) {
+                        Serial.print("[UART RX] << ");
+                        Serial.println(inputBuffer);
+
+                        UartRxMessage rxMsg;
+                        // Copy cẩn thận để tránh tràn bộ nhớ
+                        size_t copyLen = (inputBuffer.length() < sizeof(rxMsg.cmd)) ? inputBuffer.length() : (sizeof(rxMsg.cmd) - 1);
+                        strncpy(rxMsg.cmd, inputBuffer.c_str(), copyLen);
+                        rxMsg.cmd[copyLen] = '\0'; 
+                        
+                        if(xQueueSend(self->_rxQueue, &rxMsg, 0) != pdTRUE) {
+                             Serial.println("[UART ERR] RX Queue Full!");
+                        }
+                        inputBuffer = "";
+                    }
+                } 
+                else if (c != '\r') {
+                    // [SỬA LỖI TẠI ĐÂY] Đã đổi inputBuf thành inputBuffer
+                    if (inputBuffer.length() < 1024) inputBuffer += c; 
+                }
+            }
+        }
+        vTaskDelay(20 / portTICK_PERIOD_MS); 
+    }
+}
+
+bool UARTCommander::hasCommand() {
+    return uxQueueMessagesWaiting(_rxQueue) > 0;
 }
 
 String UARTCommander::getCommand() {
-    char buffer[512];
-    if (xQueueReceive(_commandQueue, &buffer, 0) == pdTRUE) {
-        return String(buffer);
+    UartRxMessage msg;
+    if (xQueueReceive(_rxQueue, &msg, 0) == pdTRUE) {
+        return String(msg.cmd);
     }
     return "";
-}
-
-void UARTCommander::clearCommand() { 
-    xQueueReset(_commandQueue); 
 }
