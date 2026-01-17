@@ -65,7 +65,8 @@ struct CommandData {
     // Dữ liệu cấu hình (trong "cmd")
     int manualInterval;     // transmissionIntervalMinutes
     int autoMeasureCount;   // measurementCount
-    String autoStartTime;   // startTime
+    String autoStartTime;   // startTime (String "20:20")
+    int startTimeSeconds;   // startTime parsed (giây trong ngày: 73200 cho 20:20)
     
     // Dữ liệu hành động tức thời (trong "do")
     bool hasActions;        // Có lệnh hành động không?
@@ -82,5 +83,6 @@ struct CommandData {
         timestamp = 0;
         manualInterval = -1; 
         autoMeasureCount = -1;
+        startTimeSeconds = 0;
     }
 };

@@ -93,6 +93,16 @@ CommandData CommandProcessor::parse(const String& rawInput) {
             }
             if (!doObj["startTime"].isNull()) {
                 cmd.autoStartTime = doObj["startTime"].as<String>();
+                
+                // === PARSE startTime "HH:MM" -> seconds ===
+                int colonIndex = cmd.autoStartTime.indexOf(':');
+                if (colonIndex > 0) {
+                    int hour = cmd.autoStartTime.substring(0, colonIndex).toInt();
+                    int minute = cmd.autoStartTime.substring(colonIndex + 1).toInt();
+                    cmd.startTimeSeconds = hour * 3600 + minute * 60;
+                    Serial.printf("[CMD] Parsed startTime %s -> %u seconds\n", 
+                                  cmd.autoStartTime.c_str(), cmd.startTimeSeconds);
+                }
             }
 
             // Lệnh Manual / Tức thời

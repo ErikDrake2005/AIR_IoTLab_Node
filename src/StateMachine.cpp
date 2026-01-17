@@ -23,6 +23,8 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _status.saved_daily_measures = 4;
     
     _cycleState = STATE_IDLE;
+    _gridInterval = 0;
+    _startTimeSeconds = 0;  // Khởi tạo 0 (chưa có schedule)
     _nextTimeSync = 0;
     _stopRequested = false;
     _lastTriggerMin = -1;
@@ -92,8 +94,16 @@ void StateMachine::update() {
             _isUartWakeup = false;
         }
         
-        // Kiểm tra lịch/lưới để kích hoạt Auto Cycle
-        if (_checkSchedule() || _checkGrid()) {
+        // === MỚI: Kiểm tra SCHEDULE (startTime + grid) ======================
+        // Nếu có startTime hẹn, check schedule trước
+        if (_startTimeSeconds > 0) {
+            if (_checkSchedule()) {
+                _startAutoCycle();
+                return;
+            }
+        }
+        // Fallback: Kiểm tra GRID (tuần hoàn từ 0:00)
+        else if (_checkGrid()) {
             _startAutoCycle();
             return;
         }
@@ -141,11 +151,24 @@ void StateMachine::_applyCommand(CommandData& cmd) {
             _resetCycle(); // Chuyển mode thì reset hết
             changed = true; 
         }
+        
+        // Cập nhật measurementCount (nếu có)
         if (cmd.autoMeasureCount > 0) {
             _status.saved_daily_measures = cmd.autoMeasureCount;
             _recalcGrid();
             changed = true;
         }
+        // Nếu autoMeasureCount = -1, giữ giá trị cũ ✓
+        
+        // Cập nhật startTime (nếu có)
+        if (cmd.startTimeSeconds > 0) {
+            _startTimeSeconds = cmd.startTimeSeconds;
+            Serial.printf("[SM] Set startTime: %u seconds\n", _startTimeSeconds);
+            changed = true;
+        }
+        // Nếu startTimeSeconds = 0, giữ giá trị cũ ✓
+        
+        _sendMachineStatus();
     } 
     else if (cmd.setMode == MODE_MANUAL) {
         if (_status.mode != MODE_MANUAL) { 
@@ -153,35 +176,44 @@ void StateMachine::_applyCommand(CommandData& cmd) {
             _resetCycle(); // Chuyển mode thì reset hết
             changed = true; 
         }
+        
+        // Cập nhật transmissionIntervalMinutes (nếu có)
         if (cmd.manualInterval > 0) {
             _status.saved_manual_cycle = cmd.manualInterval;
             _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
             changed = true;
         }
+        // Nếu manualInterval = -1, giữ giá trị cũ ✓
 
         // --- MANUAL ACTIONS ---
         if (cmd.hasActions) {
-            if (cmd.doorStatus == "open") _setDoor(true);
-            else if (cmd.doorStatus == "close") _setDoor(false);
+            if (!cmd.doorStatus.isEmpty()) {
+                if (cmd.doorStatus == "open") _setDoor(true);
+                else if (cmd.doorStatus == "close") _setDoor(false);
+            }
 
-            if (cmd.fanStatus == "on") _setFan(true);
-            else if (cmd.fanStatus == "off") _setFan(false);
+            if (!cmd.fanStatus.isEmpty()) {
+                if (cmd.fanStatus == "on") _setFan(true);
+                else if (cmd.fanStatus == "off") _setFan(false);
+            }
 
             // [LOGIC MANUAL MỚI]
-            // start/measurement -> Bật máy, Giữ nguyên, Đo
-            if (cmd.chamberStatus == "measuring" || cmd.chamberStatus == "trigger_measure" || cmd.chamberStatus == "start") {
-                _performManualMeasurement(); 
-            }
-            // stop -> Tắt máy, Về IDLE
-            else if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop_measure") {
-                _stopRequested = true; // Sẽ kích hoạt _resetCycle ở vòng loop tới
+            if (!cmd.chamberStatus.isEmpty()) {
+                // start/measurement -> Bật máy, Giữ nguyên, Đo
+                if (cmd.chamberStatus == "measuring" || cmd.chamberStatus == "trigger_measure" || cmd.chamberStatus == "start") {
+                    _performManualMeasurement(); 
+                }
+                // stop -> Tắt máy, Về IDLE
+                else if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop_measure") {
+                    _stopRequested = true; // Sẽ kích hoạt _resetCycle ở vòng loop tới
+                }
             }
             
             changed = true;
         }
+        
+        _sendMachineStatus();
     }
-
-    _sendMachineStatus();
 }
 
 // ================= LOGIC AUTO CYCLE (15 PHÚT) =================
@@ -323,12 +355,15 @@ void StateMachine::_resetMiniData() {
 // ================= QUẢN LÝ NĂNG LƯỢNG =================
 
 void StateMachine::_enterDeepSleep() {
-    Serial.println("[PWR] Deep Sleep");
+    Serial.println("[PWR] Entering Deep Sleep");
     _setDoor(true); // Mở cửa khi ngủ cho an toàn
     _setFan(false);
     
     _sendPacket(_jsonFormatter.createAck("SLEEP"));
     delay(500); 
+    
+    // === QUAN TRỌNG: Lưu time trước khi sleep ===
+    _timeSync.beforeDeepSleep();
     
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     esp_deep_sleep_start();
@@ -344,6 +379,9 @@ void StateMachine::_handleLightSleep() {
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     esp_light_sleep_start();
     digitalWrite(PIN_SLEEP_STATUS, HIGH); 
+    
+    // === AFTERWAKEUP: Restore time từ RTC ===
+    _timeSync.afterWakeup();
     
     if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART) {
         while(Serial1.available()) Serial1.read(); 
@@ -384,7 +422,39 @@ void StateMachine::_recalcGrid() {
     _gridInterval = 86400 / _status.saved_daily_measures;
 }
 
-bool StateMachine::_checkSchedule() { return false; } 
+bool StateMachine::_checkSchedule() {
+    // Kiểm tra xem thời gian hiện tại có khớp với lịch hẹn (startTime + grid) không?
+    unsigned long now = _timeSync.getCurrentTime();
+    
+    // Điều kiện: phải có time sync, phải có grid, phải có startTime
+    if (now < 100000 || _gridInterval == 0 || _startTimeSeconds == 0) {
+        return false;
+    }
+    
+    // Lấy số giây trong ngày hiện tại (0-86400)
+    unsigned long secondsInDay = now % 86400;
+    
+    // Kiểm tra: từ startTime, các thời điểm cần đo là:
+    // startTime, startTime + gridInterval, startTime + 2*gridInterval, ...
+    
+    if (secondsInDay >= _startTimeSeconds) {
+        // Đã qua startTime trong ngày
+        unsigned long elapsed = secondsInDay - _startTimeSeconds;
+        if (elapsed % _gridInterval < 5) {  // Tolerance 5 giây
+            Serial.printf("[SCHEDULE] Trigger at %lu (cycle: %lu)\n", secondsInDay, elapsed / _gridInterval);
+            return true;
+        }
+    } else {
+        // Chưa đến startTime trong ngày, kiểm tra từ ngày hôm trước
+        unsigned long prevDayTime = secondsInDay + 86400 - _startTimeSeconds;
+        if (prevDayTime % _gridInterval < 5) {
+            Serial.printf("[SCHEDULE] Trigger at %lu (from prev day)\n", secondsInDay);
+            return true;
+        }
+    }
+    
+    return false;
+}
 
 bool StateMachine::_checkGrid() {
     unsigned long now = _timeSync.getCurrentTime();

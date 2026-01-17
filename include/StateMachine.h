@@ -43,6 +43,7 @@ private:
     
     // --- THỜI GIAN & LỊCH TRÌNH ---
     unsigned long _gridInterval;
+    unsigned long _startTimeSeconds;   // startTime parsed (giây trong ngày)
     unsigned long _manualIntervalMs; // Vẫn giữ để tính toán nhanh
     unsigned long _nextManualRun;
     
