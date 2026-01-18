@@ -1,17 +1,21 @@
 #pragma once
 #include <Arduino.h>
 #include "MeasurementData.h"
+#include <functional>
 
 class RS485Master;
 class SHT31Sensor;
 class JsonFormatter;
+
+// Callback type để check lệnh khẩn cấp trong quá trình đo
+typedef std::function<void()> UrgentCheckCallback;
 
 class Measurement {
 public:
     Measurement(RS485Master &rs485Master, SHT31Sensor &sht31Sensor, JsonFormatter &jsonFormatter);
     
     // Hàm thực hiện đo đạc, trả về false nếu có bất kỳ cảm biến nào lỗi
-    bool doFullMeasurement(MeasurementData& data, bool* abortFlag = nullptr);
+    bool doFullMeasurement(MeasurementData& data, bool* abortFlag = nullptr, UrgentCheckCallback checkCallback = nullptr);
     
     // Hàm wrapper tạo JSON (dùng cho debug hoặc tương thích ngược)
     bool doFullMeasurement(String& outputJson);

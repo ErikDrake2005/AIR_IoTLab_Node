@@ -1,10 +1,15 @@
 // src/RS485Master.cpp
 #include "RS485Master.h"
+
+// --- TIMEOUT CHO RS485 ---
+const uint16_t RS485_CMD_TIMEOUT_MS = 2000;    // Timeout cho lệnh gửi đi
+const uint16_t RS485_RESPONSE_TIMEOUT_MS = 2500; // Timeout cho phản hồi
+
 RS485Master::RS485Master(HardwareSerial& serial, uint8_t dePin)
     : _serial(serial), _dePin(dePin) {}
 void RS485Master::begin() {
     _serial.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-    _serial.setTimeout(200);
+    _serial.setTimeout(300);
     pinMode(_dePin, OUTPUT);
     _receiveMode();
     _initialized = true;
@@ -15,10 +20,10 @@ void RS485Master::_receiveMode()  { digitalWrite(_dePin, LOW); }
 bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) {
     while (_serial.available()) _serial.read(); 
     _transmitMode();
-    vTaskDelay(2 / portTICK_PERIOD_MS); 
+    vTaskDelay(5 / portTICK_PERIOD_MS); 
     _serial.printf(":S%d,CMD%d\n", slaveId, cmd);
     _serial.flush();
-    vTaskDelay(2 / portTICK_PERIOD_MS); 
+    vTaskDelay(5 / portTICK_PERIOD_MS); 
     _receiveMode();
     unsigned long start = millis();
     while (millis() - start < timeoutMs) {
@@ -28,6 +33,7 @@ bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) 
             if (resp.indexOf(",ACK,") != -1) return true;
             vTaskDelay(1 / portTICK_PERIOD_MS);
         }
+        vTaskDelay(10 / portTICK_PERIOD_MS); // Tránh busy-wait
     }
     return false;
 }
@@ -40,7 +46,7 @@ String RS485Master::readResponse(uint16_t timeoutMs) {
             line.trim();
             if (line.startsWith(":S")) return line;
         }
-        vTaskDelay(1 / portTICK_PERIOD_MS);
+        vTaskDelay(10 / portTICK_PERIOD_MS); // Tránh busy-wait
     }
     return "";
 }

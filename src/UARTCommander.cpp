@@ -32,16 +32,8 @@ void UARTCommander::txTask(void* pvParameters) {
     for (;;) {
         if (xQueueReceive(self->_txQueue, &msg, portMAX_DELAY) == pdTRUE) {
             if (self->_serial) {
-                // 1. Gửi dữ liệu ra UART
                 self->_serial->write(msg.buffer, msg.length);
-                self->_serial->write('\n'); // Kết thúc gói
-                
-                // 2. Log Debug
-                Serial.print("[UART TX] >> ");
-                Serial.write(msg.buffer, msg.length);
-                Serial.println();
-
-                // 3. Delay bắt buộc cho Bridge xử lý
+                self->_serial->write('\n');
                 vTaskDelay(10 / portTICK_PERIOD_MS); 
             }
         }
@@ -66,6 +58,11 @@ void UARTCommander::send(const String& jsonStr) {
     // Tính CRC
     unsigned long crc = CRC32::calculate(jsonStr);
     String packet = jsonStr + "|" + String(crc, HEX);
+    
+    // LOG TX để debug
+    Serial.print("[TX] ");
+    Serial.println(packet);
+    
     enqueueTx((const uint8_t*)packet.c_str(), packet.length(), "JSON");
 }
 
@@ -83,9 +80,10 @@ void UARTCommander::rxTask(void* pvParameters) {
                 
                 if (c == '\n') {
                     if (inputBuffer.length() > 0) {
-                        Serial.print("[UART RX] << ");
+                        // LOG RX để debug
+                        Serial.print("[RX] ");
                         Serial.println(inputBuffer);
-
+                        
                         UartRxMessage rxMsg;
                         // Copy cẩn thận để tránh tràn bộ nhớ
                         size_t copyLen = (inputBuffer.length() < sizeof(rxMsg.cmd)) ? inputBuffer.length() : (sizeof(rxMsg.cmd) - 1);

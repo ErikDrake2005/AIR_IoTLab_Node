@@ -91,6 +91,9 @@ private:
     
     void _setDoor(bool open);
     void _setFan(bool on);
+    
+    // Check lệnh khẩn cấp (stop) trong quá trình đo
+    void _checkUrgentCommands();
 };
 
 #endif

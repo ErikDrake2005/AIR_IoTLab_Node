@@ -110,6 +110,11 @@ void setup() {
     commandSerial.setRxBufferSize(4096);
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     
+    // Flush bất kỳ dữ liệu rác từ bootloader
+    delay(100);
+    while(commandSerial.available()) commandSerial.read();
+    commandSerial.flush();
+    
     // UARTCommander sẽ tự tạo 2 Task (TX và RX) chạy ngầm
     uartCommander.begin(commandSerial);
     

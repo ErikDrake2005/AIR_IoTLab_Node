@@ -47,9 +47,21 @@ void StateMachine::begin() {
     #endif
 
     _recalcGrid();
-    _resetCycle(); // Đưa máy về trạng thái an toàn (Mở cửa, Tắt quạt)
+    
+    // Đưa máy về trạng thái an toàn (Mở cửa, Tắt quạt)
+    Serial.println("[BOOT] Resetting to safe state...");
+    _resetCycle();
+    
+    // Chờ một chút để UART Commander Task sẵn sàng trước khi gửi
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    
+    // Gửi machine_status sau khi khởi động
+    Serial.println("[BOOT] Sending initial machine_status...");
     _sendMachineStatus();
-    _requestTimeSync(); // Hỏi giờ Gateway ngay khi khởi động
+    
+    // Hỏi giờ Gateway
+    Serial.println("[BOOT] Requesting time sync...");
+    _requestTimeSync();
 }
 
 void StateMachine::update() {
@@ -70,7 +82,7 @@ void StateMachine::update() {
     // 3A. AUTO MODE LOGIC
     if (_status.mode == MODE_AUTO && _cycleState != STATE_IDLE) {
         _processAutoCycle();
-        _handleLightSleep(); // Ngủ nhẹ giữa các pha chờ của Auto
+        // _handleLightSleep(); // [DISABLED] Không ngủ nhẹ nữa
         return;
     }
 
@@ -101,102 +113,146 @@ void StateMachine::update() {
             return;
         }
         
-        _handleLightSleep(); // Ngủ tiết kiệm pin khi chờ
+        // Delay nhỏ để không busy-wait (có thể điều chỉnh 10-100ms)
+        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
 // ================= XỬ LÝ LỆNH TỪ BRIDGE =================
 
 void StateMachine::processRawCommand(String rawLine) {
-    // 1. Parse lệnh
     CommandData cmd = _cmdProcessor.parse(rawLine);
     
+    // Nếu gói tin không hợp lệ -> bỏ qua
     if (!cmd.isValid) {
-        Serial.println("[CMD] Ignored (Invalid CRC/JSON)");
+        Serial.println("[CMD] Invalid command received, ignoring...");
         return;
     }
 
-    Serial.println("[CMD] Valid. Processing...");
+    // Biến cờ để theo dõi có thay đổi gì không (debug)
+    bool hasChanges = false;
 
-    // 2. XỬ LÝ LỆNH NGỦ (ƯU TIÊN 1)
+    // 1. XỬ LÝ LỆNH NGỦ (SLEEP)
     if (cmd.setMode == MODE_SLEEP) {
-        Serial.println("[CMD] Received SLEEP command.");
+        Serial.println("[CMD] SLEEP command received");
+        _sendMachineStatus(); // Gửi trạng thái trước khi ngủ
         _enterDeepSleep(); 
         return; 
     }
 
-    // 3. XỬ LÝ ĐỒNG BỘ GIỜ (ƯU TIÊN 2)
+    // 2. XỬ LÝ ĐỒNG BỘ THỜI GIAN (TIMESTAMP)
     if (cmd.setMode == MODE_TIMESTAMP) {
         if (cmd.timestamp > 0) {
+            Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
             _timeSync.updateEpoch(cmd.timestamp);
             _recalcGrid();
+            hasChanges = true;
         }
+        // Gửi machine_status phản hồi
+        _sendMachineStatus();
+        return;
     }
 
-    // 4. XỬ LÝ CHUYỂN CHẾ ĐỘ (AUTO / MANUAL)
+    // 3. XỬ LÝ CHUYỂN CHẾ ĐỘ (AUTO / MANUAL)
     if (cmd.setMode == MODE_AUTO) {
         if (_status.mode != MODE_AUTO) {
             Serial.println("[MODE] Switched to AUTO");
             _status.mode = MODE_AUTO;
             _resetCycle(); 
+            hasChanges = true;
         }
+        // Cập nhật measurementCount nếu có (không null và > 0)
         if (cmd.autoMeasureCount > 0) {
             _status.saved_daily_measures = cmd.autoMeasureCount;
             _recalcGrid();
+            hasChanges = true;
         }
-        if (cmd.startTimeSeconds > 0) _startTimeSeconds = cmd.startTimeSeconds;
+        // Cập nhật startTime nếu có
+        if (cmd.startTimeSeconds > 0) {
+            _startTimeSeconds = cmd.startTimeSeconds;
+            hasChanges = true;
+        }
     }
     else if (cmd.setMode == MODE_MANUAL) {
         if (_status.mode != MODE_MANUAL) {
             Serial.println("[MODE] Switched to MANUAL");
+            // Nếu đang trong auto cycle, dừng lại
+            if (_cycleState != STATE_IDLE) {
+                _stopRequested = true;
+            }
             _status.mode = MODE_MANUAL;
             _resetCycle();
+            hasChanges = true;
         }
+        // Cập nhật transmissionIntervalMinutes nếu có (không null và > 0)
         if (cmd.manualInterval > 0) {
             _status.saved_manual_cycle = cmd.manualInterval;
             _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
+            hasChanges = true;
         }
     }
 
-    // 5. THỰC THI HÀNH ĐỘNG (Chỉ MANUAL Mode mới điều khiển Relay trực tiếp)
-    // [CHECK QUAN TRỌNG]: Code này CÓ điều khiển phần cứng
-    if (_status.mode == MODE_MANUAL && cmd.hasActions) {
-        // Điều khiển Cửa
-        if (cmd.doorStatus == "open")       _setDoor(true);
-        else if (cmd.doorStatus == "close") _setDoor(false);
+    // 4. XỬ LÝ CÁC HÀNH ĐỘNG (trong khóa "do")
+    if (cmd.hasActions) {
+        // Xử lý doorStatus
+        if (!cmd.doorStatus.isEmpty()) {
+            if (cmd.doorStatus == "open") {
+                _setDoor(true);
+                hasChanges = true;
+            } else if (cmd.doorStatus == "close") {
+                _setDoor(false);
+                hasChanges = true;
+            }
+        }
 
-        // Điều khiển Quạt
-        if (cmd.fanStatus == "on")          _setFan(true);
-        else if (cmd.fanStatus == "off")    _setFan(false);
+        // Xử lý fanStatus
+        if (!cmd.fanStatus.isEmpty()) {
+            if (cmd.fanStatus == "on") {
+                _setFan(true);
+                hasChanges = true;
+            } else if (cmd.fanStatus == "off") {
+                _setFan(false);
+                hasChanges = true;
+            }
+        }
 
-        // Điều khiển Đo
+        // Xử lý chamberStatus (start/stop measurement)
         if (!cmd.chamberStatus.isEmpty()) {
             if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop-measurement") {
-                _stopRequested = true; // Sẽ được xử lý ở update()
-            } else {
-                // start, trigger, measuring...
-                _performManualMeasurement();
+                Serial.println("[CMD] Stop measurement requested");
+                // Thực hiện dừng ngay lập tức, không đợi update() loop
+                _resetCycle();
+                Serial.println("[CMD] Measurement stopped, sending ACK...");
+                _sendMachineStatus();
+                return; // Đã gửi status, không cần gửi lại ở cuối
+            } else if (cmd.chamberStatus == "start" || cmd.chamberStatus == "start-measurement") {
+                Serial.println("[CMD] Start measurement requested");
+                if (_status.mode == MODE_MANUAL) {
+                    _performManualMeasurement();
+                    // Đã gửi machine_status bên trong, không cần gửi lại ở cuối
+                    return;
+                }
+                hasChanges = true;
             }
         }
     }
     
-    // Gửi phản hồi trạng thái mới nhất về Server
+    // 5. LUÔN GỬI MACHINE_STATUS SAU KHI XỬ LÝ LỆNH (kể cả không có thay đổi)
+    Serial.printf("[CMD] Command processed, hasChanges=%d, sending machine_status\n", hasChanges);
     _sendMachineStatus();
-    Serial.println("[CMD] Done & Status Sent.");
 }
 
 // ================= LOGIC AUTO CYCLE (15 PHÚT) =================
 
 void StateMachine::_startAutoCycle() {
-    Serial.println("[AUTO] START 15m Cycle");
     _status.isMeasuring = true;
     _cycleState = STATE_PREPARE;
     _cycleStartMs = millis();
     
-    _setDoor(false); // Đóng cửa (RELAY OFF_DOOR)
-    _setFan(true);   // Bật quạt (RELAY ON_FAN)
+    _setDoor(false);
+    _setFan(true);
     
-    _sendMachineStatus(); // Báo trạng thái đang đo
+    _sendMachineStatus();
     _resetMiniData();
 }
 
@@ -206,24 +262,21 @@ void StateMachine::_processAutoCycle() {
     if (elapsed > T_TIMEOUT) { _finishAutoCycle(true); return; }
 
     switch (_cycleState) {
-        case STATE_PREPARE: // 10s đầu
+        case STATE_PREPARE:
             if (elapsed >= T_PREPARE) _cycleState = STATE_WAIT_1;
             break;
-        case STATE_WAIT_1: // Phút thứ 3
+        case STATE_WAIT_1:
             if (elapsed >= T_MEASURE_1) {
-                Serial.println("[AUTO] Mini Measure 1");
                 _meas.doFullMeasurement(_miniData[0]); 
                 _cycleState = STATE_WAIT_2;
             } break;
-        case STATE_WAIT_2: // Phút thứ 8
+        case STATE_WAIT_2:
             if (elapsed >= T_MEASURE_2) {
-                Serial.println("[AUTO] Mini Measure 2");
                 _meas.doFullMeasurement(_miniData[1]); 
                 _cycleState = STATE_WAIT_3;
             } break;
-        case STATE_WAIT_3: // Phút thứ 15
+        case STATE_WAIT_3:
             if (elapsed >= T_MEASURE_3) {
-                Serial.println("[AUTO] Mini Measure 3");
                 _meas.doFullMeasurement(_miniData[2]); 
                 _finishAutoCycle(false); 
             } break;
@@ -232,14 +285,10 @@ void StateMachine::_processAutoCycle() {
 
 void StateMachine::_finishAutoCycle(bool aborted) {
     if (aborted) {
-        Serial.println("[AUTO] Aborted!");
         _resetCycle();
         return;
     }
-
-    Serial.println("[AUTO] Finished. Calc Average...");
     
-    // Tính trung bình 3 lần đo
     float sumCH4 = 0, sumCO = 0, sumAlc = 0, sumNH3 = 0, sumH2 = 0, sumTemp = 0, sumHum = 0;
     int cntCH4 = 0, cntCO = 0, cntAlc = 0, cntNH3 = 0, cntH2 = 0, cntTemp = 0, cntHum = 0;
 
@@ -261,44 +310,67 @@ void StateMachine::_finishAutoCycle(bool aborted) {
     float avgTemp= (cntTemp> 0) ? (sumTemp/ cntTemp): -1.0f;
     float avgHum = (cntHum > 0) ? (sumHum / cntHum) : -1.0f;
 
-    // Gửi gói tin DATA
     String jsonPkt = _jsonFormatter.createDataJson(avgCH4, avgCO, avgAlc, avgNH3, avgH2, avgTemp, avgHum);
     _sendPacket(jsonPkt);
 
-    // Xong cycle thì về nghỉ và NGỦ DEEP SLEEP để tiết kiệm pin tối đa
     _resetCycle(); 
     _enterDeepSleep();
 }
 
-// ================= LOGIC MANUAL (SNAPSHOT) =================
-
 void StateMachine::_performManualMeasurement() {
-    // Nếu chưa bật máy thì bật lên (Cửa đóng, Quạt mở)
     if (!_status.isMeasuring) {
-        Serial.println("[MANUAL] Start Session: Close Door, Fan ON...");
         _status.isMeasuring = true; 
+        _setDoor(false);
+        _setFan(true);
         
-        _setDoor(false); // Đóng cửa
-        _setFan(true);   // Bật quạt
+        // GỬI MACHINE_STATUS NGAY SAU KHI ĐỔI TRẠNG THÁI
+        Serial.println("[MANUAL] Status changed, sending machine_status before measure...");
+        _sendMachineStatus();
         
-        // Dùng vTaskDelay thay cho delay() để không treo hệ thống
-        vTaskDelay(T_PREPARE / portTICK_PERIOD_MS); 
-    } 
-
-    Serial.println("[MANUAL] Measuring Snapshot...");
+        // Chờ khí ổn định (10s) - chia nhỏ để check abort và lệnh khẩn cấp
+        Serial.println("[MANUAL] Waiting for gas stabilization...");
+        unsigned long prepareEnd = millis() + T_PREPARE;
+        while (millis() < prepareEnd) {
+            // Check lệnh khẩn cấp từ UART mỗi 500ms
+            vTaskDelay(500 / portTICK_PERIOD_MS);
+            _checkUrgentCommands();
+            
+            if (_stopRequested) {
+                Serial.println("[MANUAL] Aborted during preparation!");
+                _resetCycle();
+                _sendMachineStatus();
+                return;
+            }
+        }
+    }
     
-    // Đo 1 mẫu
+    // Kiểm tra abort trước khi đo
+    if (_stopRequested) {
+        _resetCycle();
+        _sendMachineStatus();
+        return;
+    }
+    
     MeasurementData singleSample;
-    if (_meas.doFullMeasurement(singleSample)) {
+    // Truyền _stopRequested và callback để measurement có thể abort giữa chừng
+    // Lambda capture this để có thể gọi _checkUrgentCommands()
+    auto urgentCheck = [this]() { this->_checkUrgentCommands(); };
+    
+    if (_meas.doFullMeasurement(singleSample, &_stopRequested, urgentCheck)) {
+        // Kiểm tra lại sau khi đo xong
+        if (_stopRequested) {
+            Serial.println("[MANUAL] Aborted after measurement!");
+            _resetCycle();
+            _sendMachineStatus();
+            return;
+        }
+        
         String jsonPkt = _jsonFormatter.createDataJson(
             singleSample.ch4, singleSample.co, singleSample.alc, 
             singleSample.nh3, singleSample.h2, singleSample.temp, singleSample.hum
         );
         _sendPacket(jsonPkt);
-        Serial.println("[MANUAL] Data Sent.");
     }
-
-    // Lưu ý: Manual mode không tự tắt (Close/Off), user phải gửi lệnh STOP
 }
 
 // ================= RESET & UTILS =================
@@ -482,4 +554,44 @@ void StateMachine::_requestTimeSync() {
 
 void StateMachine::_sendPacket(String json) {
     _cmd.send(json);    
+}
+
+// ================= CHECK LỆNH KHẨN CẤP (TRONG QUÁ TRÌNH ĐO) =================
+void StateMachine::_checkUrgentCommands() {
+    // Kiểm tra xem có lệnh nào trong queue không
+    if (_cmd.hasCommand()) {
+        String rawCmd = _cmd.getCommand();
+        Serial.printf("[URGENT] Received command during measurement: %s\n", rawCmd.c_str());
+        
+        // Parse nhanh để check có phải lệnh stop không
+        CommandData cmd = _cmdProcessor.parse(rawCmd);
+        
+        if (cmd.isValid) {
+            // Check lệnh stop
+            if (!cmd.chamberStatus.isEmpty() && 
+                (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop-measurement")) {
+                Serial.println("[URGENT] STOP command detected!");
+                _stopRequested = true;
+            }
+            // Check lệnh sleep
+            else if (cmd.setMode == MODE_SLEEP) {
+                Serial.println("[URGENT] SLEEP command detected!");
+                _stopRequested = true;
+            }
+            // Các lệnh khác (door, fan, mode change) - xử lý ngay
+            else {
+                // Xử lý door/fan ngay
+                if (!cmd.doorStatus.isEmpty()) {
+                    if (cmd.doorStatus == "open") _setDoor(true);
+                    else if (cmd.doorStatus == "close") _setDoor(false);
+                    _sendMachineStatus();
+                }
+                if (!cmd.fanStatus.isEmpty()) {
+                    if (cmd.fanStatus == "on") _setFan(true);
+                    else if (cmd.fanStatus == "off") _setFan(false);
+                    _sendMachineStatus();
+                }
+            }
+        }
+    }
 }
