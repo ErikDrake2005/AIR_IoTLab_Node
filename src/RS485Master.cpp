@@ -17,24 +17,40 @@ void RS485Master::begin() {
 }
 void RS485Master::_transmitMode() { digitalWrite(_dePin, HIGH); }
 void RS485Master::_receiveMode()  { digitalWrite(_dePin, LOW); }
+
 bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) {
+    // Xả buffer cũ
     while (_serial.available()) _serial.read(); 
+    
+    // Chuyển sang chế độ truyền
     _transmitMode();
-    vTaskDelay(5 / portTICK_PERIOD_MS); 
+    delay(5);  // [FIX] Dùng delay() blocking thay vì vTaskDelay để đảm bảo timing
+    
+    // Gửi lệnh
     _serial.printf(":S%d,CMD%d\n", slaveId, cmd);
     _serial.flush();
-    vTaskDelay(5 / portTICK_PERIOD_MS); 
+    
+    delay(5);  // [FIX] Đợi gửi xong
+    
+    // Chuyển về chế độ nhận
     _receiveMode();
+    
+    // Chờ ACK
     unsigned long start = millis();
     while (millis() - start < timeoutMs) {
         if (_serial.available()) {
             String resp = _serial.readStringUntil('\n');
             resp.trim();
-            if (resp.indexOf(",ACK,") != -1) return true;
-            vTaskDelay(1 / portTICK_PERIOD_MS);
+            Serial.printf("[RS485] RX: %s\n", resp.c_str());  // [DEBUG]
+            if (resp.indexOf(",ACK,") != -1) {
+                Serial.printf("[RS485] ACK received from S%d CMD%d\n", slaveId, cmd);
+                return true;
+            }
         }
-        vTaskDelay(10 / portTICK_PERIOD_MS); // Tránh busy-wait
+        delay(10); // [FIX] Dùng delay() thay vì vTaskDelay
     }
+    
+    Serial.printf("[RS485] TIMEOUT waiting ACK from S%d CMD%d\n", slaveId, cmd);
     return false;
 }
 
@@ -44,10 +60,12 @@ String RS485Master::readResponse(uint16_t timeoutMs) {
         if (_serial.available()) {
             String line = _serial.readStringUntil('\n');
             line.trim();
+            Serial.printf("[RS485] RX DATA: %s\n", line.c_str());  // [DEBUG]
             if (line.startsWith(":S")) return line;
         }
-        vTaskDelay(10 / portTICK_PERIOD_MS); // Tránh busy-wait
+        delay(10); // [FIX] Dùng delay() thay vì vTaskDelay
     }
+    Serial.println("[RS485] TIMEOUT waiting DATA");
     return "";
 }
 bool RS485Master::parseCH4(const String& line, float& ch4) {

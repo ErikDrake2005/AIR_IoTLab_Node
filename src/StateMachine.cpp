@@ -31,6 +31,7 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _isUartWakeup = false;
     _uartWakeupMs = 0;
     _nextManualRun = 0;
+    _lastCycleStartSeconds = 0;  // Chưa có cycle nào
     
     _resetMiniData();
 }
@@ -194,45 +195,48 @@ void StateMachine::processRawCommand(String rawLine) {
 
     // 4. XỬ LÝ CÁC HÀNH ĐỘNG (trong khóa "do")
     if (cmd.hasActions) {
-        // Xử lý doorStatus
-        if (!cmd.doorStatus.isEmpty()) {
-            if (cmd.doorStatus == "open") {
-                _setDoor(true);
-                hasChanges = true;
-            } else if (cmd.doorStatus == "close") {
-                _setDoor(false);
-                hasChanges = true;
-            }
-        }
-
-        // Xử lý fanStatus
-        if (!cmd.fanStatus.isEmpty()) {
-            if (cmd.fanStatus == "on") {
-                _setFan(true);
-                hasChanges = true;
-            } else if (cmd.fanStatus == "off") {
-                _setFan(false);
-                hasChanges = true;
-            }
-        }
-
-        // Xử lý chamberStatus (start/stop measurement)
+        // [QUAN TRỌNG] Xử lý chamberStatus TRƯỚC - vì nó đã điều khiển cả cửa và quạt
+        // Nếu có chamberStatus thì bỏ qua doorStatus và fanStatus
         if (!cmd.chamberStatus.isEmpty()) {
             if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop-measurement") {
                 Serial.println("[CMD] Stop measurement requested");
                 // Thực hiện dừng ngay lập tức, không đợi update() loop
-                _resetCycle();
+                _resetCycle();  // Đã bao gồm: Mở cửa, Tắt quạt
                 Serial.println("[CMD] Measurement stopped, sending ACK...");
                 _sendMachineStatus();
                 return; // Đã gửi status, không cần gửi lại ở cuối
             } else if (cmd.chamberStatus == "start" || cmd.chamberStatus == "start-measurement") {
                 Serial.println("[CMD] Start measurement requested");
                 if (_status.mode == MODE_MANUAL) {
-                    _performManualMeasurement();
+                    _performManualMeasurement();  // Đã bao gồm: Đóng cửa, Bật quạt
                     // Đã gửi machine_status bên trong, không cần gửi lại ở cuối
                     return;
                 }
                 hasChanges = true;
+            }
+        }
+        else {
+            // CHỈ xử lý doorStatus và fanStatus khi KHÔNG CÓ chamberStatus
+            // Xử lý doorStatus
+            if (!cmd.doorStatus.isEmpty()) {
+                if (cmd.doorStatus == "open") {
+                    _setDoor(true);
+                    hasChanges = true;
+                } else if (cmd.doorStatus == "close") {
+                    _setDoor(false);
+                    hasChanges = true;
+                }
+            }
+
+            // Xử lý fanStatus
+            if (!cmd.fanStatus.isEmpty()) {
+                if (cmd.fanStatus == "on") {
+                    _setFan(true);
+                    hasChanges = true;
+                } else if (cmd.fanStatus == "off") {
+                    _setFan(false);
+                    hasChanges = true;
+                }
             }
         }
     }
@@ -248,6 +252,10 @@ void StateMachine::_startAutoCycle() {
     _status.isMeasuring = true;
     _cycleState = STATE_PREPARE;
     _cycleStartMs = millis();
+    
+    // [QUAN TRỌNG] Lưu thời điểm bắt đầu để tránh đụng lịch
+    _lastCycleStartSeconds = _timeSync.getCurrentTime();
+    Serial.printf("[AUTO] Cycle started at epoch: %lu\n", _lastCycleStartSeconds);
     
     _setDoor(false);
     _setFan(true);
@@ -310,11 +318,14 @@ void StateMachine::_finishAutoCycle(bool aborted) {
     float avgTemp= (cntTemp> 0) ? (sumTemp/ cntTemp): -1.0f;
     float avgHum = (cntHum > 0) ? (sumHum / cntHum) : -1.0f;
 
+    // Gửi dữ liệu trung bình sau khi đo xong 3 lần
     String jsonPkt = _jsonFormatter.createDataJson(avgCH4, avgCO, avgAlc, avgNH3, avgH2, avgTemp, avgHum);
     _sendPacket(jsonPkt);
+    Serial.println("[AUTO] Mini-cycle finished, average data sent.");
 
+    // Reset và gửi machine_status - KHÔNG deep sleep
     _resetCycle(); 
-    _enterDeepSleep();
+    _sendMachineStatus();
 }
 
 void StateMachine::_performManualMeasurement() {
@@ -515,6 +526,12 @@ void StateMachine::_recalcGrid() {
 bool StateMachine::_checkSchedule() {
     unsigned long now = _timeSync.getCurrentTime();
     if (now < 100000 || _gridInterval == 0 || _startTimeSeconds == 0) return false;
+    
+    // [COOLDOWN] Nếu vừa mới đo xong trong 15 phút -> bỏ qua
+    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
+        return false;  // Vẫn trong cooldown, không trigger
+    }
+    
     unsigned long secondsInDay = now % 86400;
     
     // Nếu trùng giờ hẹn (sai số < 5s)
@@ -530,8 +547,15 @@ bool StateMachine::_checkSchedule() {
 
 bool StateMachine::_checkGrid() {
     unsigned long now = _timeSync.getCurrentTime();
+    if (now < 100000) return false;
+    
+    // [COOLDOWN] Nếu vừa mới đo xong trong 15 phút -> bỏ qua
+    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
+        return false;  // Vẫn trong cooldown, không trigger
+    }
+    
     // Kiểm tra nếu thời gian hiện tại chia hết cho Grid (sai số < 5s)
-    return (now > 100000) && ((now % _gridInterval) < 5);
+    return ((now % _gridInterval) < 5);
 }
 
 void StateMachine::_sendMachineStatus() {

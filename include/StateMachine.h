@@ -57,6 +57,10 @@ private:
     std::vector<ScheduleTime> _schedules;
     int _lastTriggerMin;
     
+    // --- COOLDOWN (Chống đụng lịch) ---
+    unsigned long _lastCycleStartSeconds;  // Thời điểm bắt đầu cycle gần nhất (epoch seconds)
+    static const unsigned long CYCLE_COOLDOWN = 900;  // 15 phút cooldown
+    
     // --- BUFFER DỮ LIỆU ĐO (Cho Auto Cycle) ---
     MeasurementData _miniData[3]; 
 
