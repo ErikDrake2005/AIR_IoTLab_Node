@@ -8,7 +8,7 @@ const unsigned long T_MEASURE_1 = 180000;
 const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
-const unsigned long T_SYNC      = 3600000;
+const unsigned long T_SYNC  = 3600000;
 const unsigned long T_UART_WAIT = 15000;
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
@@ -264,7 +264,9 @@ void StateMachine::_sendDataPacket(const MeasurementData& data, int sampleNum) {
 
 void StateMachine::_finishAutoCycle(bool aborted) {
     if (aborted) {
+        Serial.println("[AUTO] Mini-cycle ABORTED (timeout).");
         _resetCycle();
+        _sendMachineStatus();
         return;
     }
     

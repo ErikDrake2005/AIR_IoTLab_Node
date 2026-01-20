@@ -6,7 +6,6 @@ CommandProcessor::CommandProcessor() {}
 bool CommandProcessor::verifyCRC(const String& rawInput, String& jsonOutput) {
     int pipeIndex = rawInput.lastIndexOf('|');
     if (pipeIndex == -1) {
-        // Không có CRC, giả sử toàn bộ là JSON (cho debug)
         jsonOutput = rawInput;
         return true;
     }
@@ -29,13 +28,11 @@ bool CommandProcessor::verifyCRC(const String& rawInput, String& jsonOutput) {
 
 CommandData CommandProcessor::parse(const String& rawInput) {
     CommandData cmd; 
-    
-    // Mặc định THỨC (Enable = true) vì Bridge đã lọc
     cmd.enable = true; 
     
     String jsonStr;
 
-    // 1. Verify CRC (hoặc bỏ qua nếu không có)
+    // 1. Verify CRC
     if (!verifyCRC(rawInput, jsonStr)) {
         Serial.println("[CMD] CRC verification failed");
         cmd.isValid = false; 
@@ -57,7 +54,7 @@ CommandData CommandProcessor::parse(const String& rawInput) {
     if (!doc["set"].isNull()) {
         String s = doc["set"].as<String>();
         s.trim();
-        s.toUpperCase(); // Chuẩn hóa thành chữ hoa
+        s.toUpperCase(); 
         
         if (s == "MANUAL") cmd.setMode = MODE_MANUAL;
         else if (s == "AUTO") cmd.setMode = MODE_AUTO;
@@ -75,7 +72,6 @@ CommandData CommandProcessor::parse(const String& rawInput) {
     JsonObject cmdObj;
 
     if (!rootObj["cmd"].isNull()) {
-        // Nếu mode là TIMESTAMP thì cmd là số (timestamp)
         if (cmd.setMode == MODE_TIMESTAMP) {
             if (rootObj["cmd"].is<unsigned long>()) {
                 cmd.timestamp = rootObj["cmd"].as<unsigned long>();
