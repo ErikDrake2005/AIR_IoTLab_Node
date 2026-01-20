@@ -8,7 +8,6 @@ const unsigned long T_MEASURE_1 = 180000;
 const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
-const unsigned long T_SYNC  = 3600000;
 const unsigned long T_UART_WAIT = 15000;
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
@@ -24,12 +23,10 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _cycleState = STATE_IDLE;
     _gridInterval = 0;
     _startTimeSeconds = 0;
-    _nextTimeSync = 0;
     _stopRequested = false;
     _isUartWakeup = false;
     _uartWakeupMs = 0;
     _nextManualRun = 0;
-    _lastCycleStartSeconds = 0;
     
     _resetMiniData();
 }
@@ -55,14 +52,10 @@ void StateMachine::begin() {
     _sendMachineStatus();
     
     Serial.println("[BOOT] Requesting time sync...");
-    _requestTimeSync();
+    _sendPacket(_jsonFormatter.createTimeSyncRequest());
 }
 
 void StateMachine::update() {
-    if (millis() > _nextTimeSync && _nextTimeSync != 0) {
-        _requestTimeSync();
-    }
-
     if (_stopRequested) {
         Serial.println("[STOP] Forced Stop Requested!");
         _resetCycle();
@@ -91,7 +84,14 @@ void StateMachine::update() {
             _isUartWakeup = false;
         }
         
-        if ((_startTimeSeconds > 0 && _checkSchedule()) || (_checkGrid())) {
+        bool shouldStart = false;
+        if (_startTimeSeconds > 0) {
+            shouldStart = _checkSchedule();
+        } else {
+            shouldStart = _checkGrid();
+        }
+        
+        if (shouldStart) {
             _startAutoCycle();
             return;
         }
@@ -118,12 +118,13 @@ void StateMachine::processRawCommand(String rawLine) {
     }
 
     if (cmd.setMode == MODE_TIMESTAMP) {
-        if (cmd.timestamp > 0) {
-            Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
-            _timeSync.updateEpoch(cmd.timestamp);
-            _recalcGrid();
-            hasChanges = true;
+        if (cmd.timestamp == 0) {
+            Serial.println("[CMD] Time sync ignored (timestamp=0 or null)");
+            return;
         }
+        Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
+        _timeSync.updateEpoch(cmd.timestamp);
+        _recalcGrid();
         _sendMachineStatus();
         return;
     }
@@ -153,6 +154,10 @@ void StateMachine::processRawCommand(String rawLine) {
             }
             _status.mode = MODE_MANUAL;
             _resetCycle();
+            
+            _startTimeSeconds = 0;
+            Serial.println("[MODE] AUTO startTime cleared");
+            
             hasChanges = true;
         }
         if (cmd.manualInterval > 0) {
@@ -211,8 +216,7 @@ void StateMachine::_startAutoCycle() {
     _cycleState = STATE_PREPARE;
     _cycleStartMs = millis();
     
-    _lastCycleStartSeconds = _timeSync.getCurrentTime();
-    Serial.printf("[AUTO] Cycle started at epoch: %lu\n", _lastCycleStartSeconds);
+    Serial.println("[AUTO] Cycle started.");
     
     _setDoor(false);
     _setFan(true);
@@ -331,8 +335,7 @@ void StateMachine::_resetCycle() {
     _setFan(false);
     _setDoor(true); 
     
-    _lastCycleStartSeconds = 0;
-    Serial.println("[CYCLE] Reset complete, cooldown cleared.");
+    Serial.println("[CYCLE] Reset complete.");
     
     _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
 }
@@ -452,33 +455,25 @@ void StateMachine::_recalcGrid() {
 
 bool StateMachine::_checkSchedule() {
     unsigned long now = _timeSync.getCurrentTime();
-    if (now < 100000 || _gridInterval == 0 || _startTimeSeconds == 0) return false;
-    
-    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
-        return false;
-    }
+    if (now < 1700000000 || _gridInterval == 0 || _startTimeSeconds == 0) return false;
     
     unsigned long secondsInDay = now % 86400;
     
     if (secondsInDay >= _startTimeSeconds) {
         unsigned long elapsed = secondsInDay - _startTimeSeconds;
-        if (elapsed % _gridInterval < 5) return true;
+        if (elapsed % _gridInterval < 10) return true;
     } else {
         unsigned long prevDayTime = secondsInDay + 86400 - _startTimeSeconds;
-        if (prevDayTime % _gridInterval < 5) return true;
+        if (prevDayTime % _gridInterval < 10) return true;
     }
     return false;
 }
 
 bool StateMachine::_checkGrid() {
     unsigned long now = _timeSync.getCurrentTime();
-    if (now < 100000) return false;
+    if (now < 1700000000 || _gridInterval == 0) return false;
     
-    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
-        return false;
-    }
-    
-    return ((now % _gridInterval) < 5);
+    return ((now % _gridInterval) < 10);
 }
 
 void StateMachine::_sendMachineStatus() {
@@ -492,11 +487,6 @@ void StateMachine::_sendMachineStatus() {
         _status.saved_manual_cycle, _status.saved_daily_measures, 0
     );
     _sendPacket(json);
-}
-
-void StateMachine::_requestTimeSync() {
-    _sendPacket(_jsonFormatter.createTimeSyncRequest());
-    _nextTimeSync = millis() + T_SYNC; 
 }
 
 void StateMachine::_sendPacket(String json) {

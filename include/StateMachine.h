@@ -43,16 +43,12 @@ private:
     unsigned long _nextManualRun;
     
     unsigned long _cycleStartMs;
-    unsigned long _nextTimeSync;
     
     bool _isUartWakeup;
     unsigned long _uartWakeupMs;
     
     std::vector<ScheduleTime> _schedules;
     int _lastTriggerMin;
-    
-    unsigned long _lastCycleStartSeconds;
-    static const unsigned long CYCLE_COOLDOWN = 900;
     
     MeasurementData _miniData[3]; 
 
@@ -70,7 +66,6 @@ private:
     bool _checkSchedule();
     bool _checkGrid();
     void _sendMachineStatus();
-    void _requestTimeSync();
     void _sendPacket(String json);
     void _sendDataPacket(const MeasurementData& data, int sampleNum);
     void _setDoor(bool open);
