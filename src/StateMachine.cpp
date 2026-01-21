@@ -7,7 +7,7 @@ const unsigned long T_PREPARE   = 10000;
 const unsigned long T_MEASURE_1 = 180000;
 const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
-const unsigned long T_TIMEOUT   = 960000;
+const unsigned long T_TIMEOUT = 960000;
 const unsigned long T_UART_WAIT = 15000;
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
@@ -18,8 +18,7 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _status.isDoorOpen = true;
     _status.isFanOn = false;
     _status.saved_manual_cycle = 5; 
-    _status.saved_daily_measures = 4;
-    
+    _status.saved_daily_measures = 2;
     _cycleState = STATE_IDLE;
     _gridInterval = 0;
     _startTimeSeconds = 0;
@@ -481,7 +480,6 @@ void StateMachine::_sendMachineStatus() {
     String stateStr = _status.isMeasuring ? "measuring" : "stop";
     String doorStr = _status.isDoorOpen ? "open" : "close";
     String fanStr = _status.isFanOn ? "on" : "off";
-    
     String json = _jsonFormatter.createMachineStatus(
         modeStr, stateStr, doorStr, fanStr, 
         _status.saved_manual_cycle, _status.saved_daily_measures, 0

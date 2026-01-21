@@ -4,13 +4,10 @@
 // --- CÁC ĐỊNH NGHĨA CONSTANT (HẰNG SỐ) ---
 #define MAX_JSON_SIZE 1024  // Kích thước tối đa cho gói tin JSON
 
-// --- ENUM: CÁC CHẾ ĐỘ & TRẠNG THÁI ---
-
-// Chế độ hoạt động (Mapping với JSON "set")
 enum SystemMode {
     MODE_MANUAL = 0,
     MODE_AUTO = 1,
-    MODE_TIMESTAMP = 2, // Chế độ chỉ để đồng bộ giờ
+    MODE_TIMESTAMP = 2,
     MODE_SLEEP = 3
 };
 
