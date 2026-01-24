@@ -95,6 +95,15 @@ void StateMachine::update() {
             return;
         }
         
+        // ═══ LIGHT-SLEEP TRONG AUTO MODE ═══
+        // Chỉ light-sleep khi:
+        // - Đang ở IDLE (không đo)
+        // - Không vừa wake từ UART
+        // - Thời gian chờ > 15 giây
+        if (_cycleState == STATE_IDLE && !_isUartWakeup) {
+            _handleLightSleep();
+        }
+        
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -371,45 +380,93 @@ void StateMachine::_setFan(bool on) {
 }
 
 void StateMachine::_enterDeepSleep() {
-    Serial.println("[PWR] Entering Deep Sleep...");
-    _resetCycle();
+    Serial.println("[PWR] Preparing for Deep Sleep...");
+    
+    // 1. Reset về trạng thái an toàn
+    _cycleState = STATE_IDLE;
+    _status.isMeasuring = false;
+    _status.mode = MODE_MANUAL;  // Reset về MANUAL mode
+    
+    // 2. Tắt fan, mở door (trạng thái an toàn)
+    _setFan(false);
+    _setDoor(true);
+    
+    Serial.println("[PWR] State reset: MANUAL, stop, door open, fan off");
+    
+    // 3. Gửi ACK
     _sendPacket(_jsonFormatter.createAck("SLEEP"));
     vTaskDelay(500 / portTICK_PERIOD_MS);
     
+    // 4. Lưu thời gian trước khi ngủ
     _timeSync.beforeDeepSleep();
     
+    // 5. Set GPIO32 LOW để báo Bridge biết Node đang ngủ
     #ifdef PIN_SLEEP_STATUS
-    digitalWrite(PIN_SLEEP_STATUS, LOW); 
+    digitalWrite(PIN_SLEEP_STATUS, LOW);
+    Serial.println("[PWR] GPIO32 LOW - signaling Bridge that Node is sleeping");
     #endif
     
+    Serial.println("[PWR] Entering Deep Sleep... (wake by GPIO33 from Bridge)");
+    Serial.flush();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // 6. Vào deep-sleep - chỉ wake bằng GPIO33 từ Bridge
     esp_deep_sleep_start();
+    // Không trở về từ đây - ESP32 sẽ reset khi wake
 }
 
 void StateMachine::_handleLightSleep() {
     unsigned long sleepTime = _calcSleepTime();
-    if (sleepTime < 5000) return; 
-
-    Serial.printf("[PWR] Light Sleep for %lu ms\n", sleepTime);
     
-    esp_sleep_enable_timer_wakeup((sleepTime - 2000) * 1000ULL); 
-    esp_sleep_enable_uart_wakeup(UART_NUM_1); 
+    // Chỉ ngủ nếu > 15 giây (cho phép wake 10s trước khi cần đo)
+    if (sleepTime < 15000) return; 
     
+    // Đặt thời gian wake sớm 10 giây để chuẩn bị
+    unsigned long actualSleep = sleepTime - 10000;
+    
+    Serial.printf("[PWR] Light Sleep for %lu ms (wake 10s early)\n", actualSleep);
+    Serial.flush();
+    
+    // Cấu hình wake-up sources
+    esp_sleep_enable_timer_wakeup(actualSleep * 1000ULL);  // Timer wake
+    esp_sleep_enable_uart_wakeup(UART_NUM_1);              // UART wake (từ Bridge)
+    #ifdef PIN_WAKEUP_GPIO
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKEUP_GPIO, 1);  // GPIO33 wake
+    #endif
+    
+    // Set GPIO32 LOW để báo Bridge biết Node đang light-sleep
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     #endif
     
+    // Vào light-sleep
     esp_light_sleep_start();
     
+    // Wake up - set GPIO32 HIGH lại
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, HIGH);
     #endif
     
+    // Khôi phục thời gian sau khi wake
     _timeSync.afterWakeup(); 
     
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART) {
+    // Kiểm tra nguyên nhân wake-up
+    esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+    
+    if (wakeupCause == ESP_SLEEP_WAKEUP_UART) {
+        Serial.println("[PWR] Woke up by UART (command from Bridge)");
+        // Clear buffer
         while(Serial1.available()) Serial1.read();
         _isUartWakeup = true;
         _uartWakeupMs = millis();
+    }
+    else if (wakeupCause == ESP_SLEEP_WAKEUP_EXT0) {
+        Serial.println("[PWR] Woke up by GPIO33 (Bridge wake pulse)");
+        _isUartWakeup = true;
+        _uartWakeupMs = millis();
+    }
+    else if (wakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
+        Serial.println("[PWR] Woke up by timer (measurement due)");
     }
 }
 
