@@ -3,11 +3,11 @@
 #include "CRC32.h"
 #include "Config.h"
 
-const unsigned long T_PREPARE   = 10000;
+const unsigned long T_PREPARE = 10000;
 const unsigned long T_MEASURE_1 = 180000;
 const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
-const unsigned long T_TIMEOUT = 960000;
+const unsigned long T_TIMEOUT   = 960000;
 const unsigned long T_UART_WAIT = 15000;
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
@@ -18,7 +18,7 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _status.isDoorOpen = true;
     _status.isFanOn = false;
     _status.saved_manual_cycle = 5; 
-    _status.saved_daily_measures = 2;
+    _status.saved_daily_measures = 4;
     _cycleState = STATE_IDLE;
     _gridInterval = 0;
     _startTimeSeconds = 0;
@@ -477,11 +477,12 @@ bool StateMachine::_checkGrid() {
 
 void StateMachine::_sendMachineStatus() {
     String modeStr = (_status.mode == MODE_AUTO) ? "AUTO" : "MANUAL";
-    String stateStr = _status.isMeasuring ? "measuring" : "stop";
-    String doorStr = _status.isDoorOpen ? "open" : "close";
-    String fanStr = _status.isFanOn ? "on" : "off";
+    int chamberStatus = _status.isMeasuring ? 1 : 0;  // 1=measuring, 0=stop
+    int doorStatus = _status.isDoorOpen ? 1 : 0;      // 1=open, 0=close
+    int fanStatus = _status.isFanOn ? 1 : 0;          // 1=on, 0=off
+    
     String json = _jsonFormatter.createMachineStatus(
-        modeStr, stateStr, doorStr, fanStr, 
+        modeStr, chamberStatus, doorStatus, fanStatus, 
         _status.saved_manual_cycle, _status.saved_daily_measures, 0
     );
     _sendPacket(json);

@@ -52,7 +52,7 @@ struct CommandData {
     bool isValid;           // Đánh dấu gói tin có hợp lệ không
     String targetNID;       // NID của gói tin
     bool enable;            // en: 1 (thức) hoặc 0 (ngủ)
-    
+    bool reset;
     // Phân loại lệnh
     SystemMode setMode;     // AUTO/MANUAL/TIMESTAMP/SLEEP
     
