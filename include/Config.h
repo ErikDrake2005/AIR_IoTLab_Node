@@ -31,3 +31,4 @@
 #define SECONDS_IN_DAY  86400UL
 #define TIME_SYNC_INTERVAL_SECONDS  3600
 #define WAKEUP_IDLE_TIMEOUT 15000 // 15s chờ lệnh sau khi wake up
+#define GMT_OFFSET_SEC  25200     // Vietnam UTC+7 = 7*3600

@@ -40,14 +40,14 @@ String JsonFormatter::createDataJson(float ch4, float co, float alc, float nh3, 
     return output;
 }
 
-String JsonFormatter::createMachineStatus(String mode, String measureStatus, String door, String fan, int manualCycle, int measuresPerDay, float batt) {
+String JsonFormatter::createMachineStatus(String mode, int chamberStatus, int doorStatus, int fanStatus, int manualCycle, int measuresPerDay, float batt) {
     JsonDocument doc;
     doc["type"] = "machine_status";
     JsonObject content = doc["content"].to<JsonObject>();
     content["mode"] = mode;                 
-    content["measure_status"] = measureStatus; 
-    content["door"] = door;                 
-    content["fan"] = fan;                   
+    content["chamberStatus"] = chamberStatus;  // 1=measuring, 0=stop
+    content["doorStatus"] = doorStatus;        // 1=open, 0=close
+    content["fanStatus"] = fanStatus;          // 1=on, 0=off
     content["saved_manual_cycle"] = manualCycle;
     content["saved_daily_meansure"] = measuresPerDay;
     content["timestamp"] = getTimestamp();

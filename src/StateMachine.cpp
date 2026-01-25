@@ -3,12 +3,11 @@
 #include "CRC32.h"
 #include "Config.h"
 
-const unsigned long T_PREPARE   = 10000;
+const unsigned long T_PREPARE = 10000;
 const unsigned long T_MEASURE_1 = 180000;
 const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
-const unsigned long T_SYNC      = 3600000;
 const unsigned long T_UART_WAIT = 15000;
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
@@ -20,16 +19,13 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _status.isFanOn = false;
     _status.saved_manual_cycle = 5; 
     _status.saved_daily_measures = 4;
-    
     _cycleState = STATE_IDLE;
     _gridInterval = 0;
     _startTimeSeconds = 0;
-    _nextTimeSync = 0;
     _stopRequested = false;
     _isUartWakeup = false;
     _uartWakeupMs = 0;
     _nextManualRun = 0;
-    _lastCycleStartSeconds = 0;
     
     _resetMiniData();
 }
@@ -55,14 +51,10 @@ void StateMachine::begin() {
     _sendMachineStatus();
     
     Serial.println("[BOOT] Requesting time sync...");
-    _requestTimeSync();
+    _sendPacket(_jsonFormatter.createTimeSyncRequest());
 }
 
 void StateMachine::update() {
-    if (millis() > _nextTimeSync && _nextTimeSync != 0) {
-        _requestTimeSync();
-    }
-
     if (_stopRequested) {
         Serial.println("[STOP] Forced Stop Requested!");
         _resetCycle();
@@ -91,9 +83,25 @@ void StateMachine::update() {
             _isUartWakeup = false;
         }
         
-        if ((_startTimeSeconds > 0 && _checkSchedule()) || (_checkGrid())) {
+        bool shouldStart = false;
+        if (_startTimeSeconds > 0) {
+            shouldStart = _checkSchedule();
+        } else {
+            shouldStart = _checkGrid();
+        }
+        
+        if (shouldStart) {
             _startAutoCycle();
             return;
+        }
+        
+        // ═══ LIGHT-SLEEP TRONG AUTO MODE ═══
+        // Chỉ light-sleep khi:
+        // - Đang ở IDLE (không đo)
+        // - Không vừa wake từ UART
+        // - Thời gian chờ > 15 giây
+        if (_cycleState == STATE_IDLE && !_isUartWakeup) {
+            _handleLightSleep();
         }
         
         vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -118,12 +126,13 @@ void StateMachine::processRawCommand(String rawLine) {
     }
 
     if (cmd.setMode == MODE_TIMESTAMP) {
-        if (cmd.timestamp > 0) {
-            Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
-            _timeSync.updateEpoch(cmd.timestamp);
-            _recalcGrid();
-            hasChanges = true;
+        if (cmd.timestamp == 0) {
+            Serial.println("[CMD] Time sync ignored (timestamp=0 or null)");
+            return;
         }
+        Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
+        _timeSync.updateEpoch(cmd.timestamp);
+        _recalcGrid();
         _sendMachineStatus();
         return;
     }
@@ -153,6 +162,10 @@ void StateMachine::processRawCommand(String rawLine) {
             }
             _status.mode = MODE_MANUAL;
             _resetCycle();
+            
+            _startTimeSeconds = 0;
+            Serial.println("[MODE] AUTO startTime cleared");
+            
             hasChanges = true;
         }
         if (cmd.manualInterval > 0) {
@@ -211,8 +224,7 @@ void StateMachine::_startAutoCycle() {
     _cycleState = STATE_PREPARE;
     _cycleStartMs = millis();
     
-    _lastCycleStartSeconds = _timeSync.getCurrentTime();
-    Serial.printf("[AUTO] Cycle started at epoch: %lu\n", _lastCycleStartSeconds);
+    Serial.println("[AUTO] Cycle started.");
     
     _setDoor(false);
     _setFan(true);
@@ -264,7 +276,9 @@ void StateMachine::_sendDataPacket(const MeasurementData& data, int sampleNum) {
 
 void StateMachine::_finishAutoCycle(bool aborted) {
     if (aborted) {
+        Serial.println("[AUTO] Mini-cycle ABORTED (timeout).");
         _resetCycle();
+        _sendMachineStatus();
         return;
     }
     
@@ -329,8 +343,7 @@ void StateMachine::_resetCycle() {
     _setFan(false);
     _setDoor(true); 
     
-    _lastCycleStartSeconds = 0;
-    Serial.println("[CYCLE] Reset complete, cooldown cleared.");
+    Serial.println("[CYCLE] Reset complete.");
     
     _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
 }
@@ -367,45 +380,93 @@ void StateMachine::_setFan(bool on) {
 }
 
 void StateMachine::_enterDeepSleep() {
-    Serial.println("[PWR] Entering Deep Sleep...");
-    _resetCycle();
+    Serial.println("[PWR] Preparing for Deep Sleep...");
+    
+    // 1. Reset về trạng thái an toàn
+    _cycleState = STATE_IDLE;
+    _status.isMeasuring = false;
+    _status.mode = MODE_MANUAL;  // Reset về MANUAL mode
+    
+    // 2. Tắt fan, mở door (trạng thái an toàn)
+    _setFan(false);
+    _setDoor(true);
+    
+    Serial.println("[PWR] State reset: MANUAL, stop, door open, fan off");
+    
+    // 3. Gửi ACK
     _sendPacket(_jsonFormatter.createAck("SLEEP"));
     vTaskDelay(500 / portTICK_PERIOD_MS);
     
+    // 4. Lưu thời gian trước khi ngủ
     _timeSync.beforeDeepSleep();
     
+    // 5. Set GPIO32 LOW để báo Bridge biết Node đang ngủ
     #ifdef PIN_SLEEP_STATUS
-    digitalWrite(PIN_SLEEP_STATUS, LOW); 
+    digitalWrite(PIN_SLEEP_STATUS, LOW);
+    Serial.println("[PWR] GPIO32 LOW - signaling Bridge that Node is sleeping");
     #endif
     
+    Serial.println("[PWR] Entering Deep Sleep... (wake by GPIO33 from Bridge)");
+    Serial.flush();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // 6. Vào deep-sleep - chỉ wake bằng GPIO33 từ Bridge
     esp_deep_sleep_start();
+    // Không trở về từ đây - ESP32 sẽ reset khi wake
 }
 
 void StateMachine::_handleLightSleep() {
     unsigned long sleepTime = _calcSleepTime();
-    if (sleepTime < 5000) return; 
-
-    Serial.printf("[PWR] Light Sleep for %lu ms\n", sleepTime);
     
-    esp_sleep_enable_timer_wakeup((sleepTime - 2000) * 1000ULL); 
-    esp_sleep_enable_uart_wakeup(UART_NUM_1); 
+    // Chỉ ngủ nếu > 15 giây (cho phép wake 10s trước khi cần đo)
+    if (sleepTime < 15000) return; 
     
+    // Đặt thời gian wake sớm 10 giây để chuẩn bị
+    unsigned long actualSleep = sleepTime - 10000;
+    
+    Serial.printf("[PWR] Light Sleep for %lu ms (wake 10s early)\n", actualSleep);
+    Serial.flush();
+    
+    // Cấu hình wake-up sources
+    esp_sleep_enable_timer_wakeup(actualSleep * 1000ULL);  // Timer wake
+    esp_sleep_enable_uart_wakeup(UART_NUM_1);              // UART wake (từ Bridge)
+    #ifdef PIN_WAKEUP_GPIO
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKEUP_GPIO, 1);  // GPIO33 wake
+    #endif
+    
+    // Set GPIO32 LOW để báo Bridge biết Node đang light-sleep
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     #endif
     
+    // Vào light-sleep
     esp_light_sleep_start();
     
+    // Wake up - set GPIO32 HIGH lại
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, HIGH);
     #endif
     
+    // Khôi phục thời gian sau khi wake
     _timeSync.afterWakeup(); 
     
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UART) {
+    // Kiểm tra nguyên nhân wake-up
+    esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
+    
+    if (wakeupCause == ESP_SLEEP_WAKEUP_UART) {
+        Serial.println("[PWR] Woke up by UART (command from Bridge)");
+        // Clear buffer
         while(Serial1.available()) Serial1.read();
         _isUartWakeup = true;
         _uartWakeupMs = millis();
+    }
+    else if (wakeupCause == ESP_SLEEP_WAKEUP_EXT0) {
+        Serial.println("[PWR] Woke up by GPIO33 (Bridge wake pulse)");
+        _isUartWakeup = true;
+        _uartWakeupMs = millis();
+    }
+    else if (wakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
+        Serial.println("[PWR] Woke up by timer (measurement due)");
     }
 }
 
@@ -450,51 +511,38 @@ void StateMachine::_recalcGrid() {
 
 bool StateMachine::_checkSchedule() {
     unsigned long now = _timeSync.getCurrentTime();
-    if (now < 100000 || _gridInterval == 0 || _startTimeSeconds == 0) return false;
-    
-    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
-        return false;
-    }
+    if (now < 1700000000 || _gridInterval == 0 || _startTimeSeconds == 0) return false;
     
     unsigned long secondsInDay = now % 86400;
     
     if (secondsInDay >= _startTimeSeconds) {
         unsigned long elapsed = secondsInDay - _startTimeSeconds;
-        if (elapsed % _gridInterval < 5) return true;
+        if (elapsed % _gridInterval < 10) return true;
     } else {
         unsigned long prevDayTime = secondsInDay + 86400 - _startTimeSeconds;
-        if (prevDayTime % _gridInterval < 5) return true;
+        if (prevDayTime % _gridInterval < 10) return true;
     }
     return false;
 }
 
 bool StateMachine::_checkGrid() {
     unsigned long now = _timeSync.getCurrentTime();
-    if (now < 100000) return false;
+    if (now < 1700000000 || _gridInterval == 0) return false;
     
-    if (_lastCycleStartSeconds > 0 && (now - _lastCycleStartSeconds) < CYCLE_COOLDOWN) {
-        return false;
-    }
-    
-    return ((now % _gridInterval) < 5);
+    return ((now % _gridInterval) < 10);
 }
 
 void StateMachine::_sendMachineStatus() {
     String modeStr = (_status.mode == MODE_AUTO) ? "AUTO" : "MANUAL";
-    String stateStr = _status.isMeasuring ? "measuring" : "stop";
-    String doorStr = _status.isDoorOpen ? "open" : "close";
-    String fanStr = _status.isFanOn ? "on" : "off";
+    int chamberStatus = _status.isMeasuring ? 1 : 0;  // 1=measuring, 0=stop
+    int doorStatus = _status.isDoorOpen ? 1 : 0;      // 1=open, 0=close
+    int fanStatus = _status.isFanOn ? 1 : 0;          // 1=on, 0=off
     
     String json = _jsonFormatter.createMachineStatus(
-        modeStr, stateStr, doorStr, fanStr, 
+        modeStr, chamberStatus, doorStatus, fanStatus, 
         _status.saved_manual_cycle, _status.saved_daily_measures, 0
     );
     _sendPacket(json);
-}
-
-void StateMachine::_requestTimeSync() {
-    _sendPacket(_jsonFormatter.createTimeSyncRequest());
-    _nextTimeSync = millis() + T_SYNC; 
 }
 
 void StateMachine::_sendPacket(String json) {

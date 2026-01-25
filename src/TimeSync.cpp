@@ -21,29 +21,33 @@ void TimeSync::syncFromTimestamp(const String& timeStr) {
 void TimeSync::updateEpoch(unsigned long epoch) {
     _epochBase = epoch;
     _syncMillis = millis();
+    
     struct timeval now = { .tv_sec = (time_t)epoch, .tv_usec = 0 };
     settimeofday(&now, NULL);
     
-    // Lưu RTC time
     _lastRtcTime = epoch;
     
-    Serial.printf("[TIME] Updated: %lu (epoch=%lu, millis=%lu)\n", epoch, _epochBase, _syncMillis);
+    Serial.printf("[TIME] Synced: %lu\n", epoch);
 }
 
 unsigned long TimeSync::getCurrentTime() {
-    if (_epochBase == 0) {
-        // Nếu chưa cập nhật, lấy từ RTC của ESP32
-        time_t now;
-        time(&now);
-        if (now > 100000) return (unsigned long)now;
-        return 0;
+    if (_epochBase > 0) {
+        return _epochBase + ((millis() - _syncMillis) / 1000UL);
     }
     
-    // Phương pháp thường: Cộng elapsed millis
-    return _epochBase + ((millis() - _syncMillis) / 1000UL);
+    time_t rtcNow;
+    time(&rtcNow);
+    if (rtcNow > 1700000000) {
+        _epochBase = (unsigned long)rtcNow;
+        _syncMillis = millis();
+        Serial.printf("[TIME] Restored from RTC: %lu\n", _epochBase);
+        return _epochBase;
+    }
+    
+    return 0;
 }
 
-// Gọi TRỚ KHI VÀO DEEP SLEEP
+
 void TimeSync::beforeDeepSleep() {
     // Lấy thời gian hiện tại từ RTC
     time_t now;
