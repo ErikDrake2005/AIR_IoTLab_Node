@@ -9,6 +9,7 @@ const unsigned long T_MEASURE_2 = 480000;
 const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
 const unsigned long T_UART_WAIT = 15000;
+const unsigned long T_IDLE_BEFORE_SLEEP = 60000;  // 1 phút chờ trước khi ngủ
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
     : _meas(meas), _relay(relay), _cmd(cmd), _timeSync(timeSync) 
@@ -96,12 +97,17 @@ void StateMachine::update() {
         }
         
         // ═══ LIGHT-SLEEP TRONG AUTO MODE ═══
-        // Chỉ light-sleep khi:
-        // - Đang ở IDLE (không đo)
-        // - Không vừa wake từ UART
-        // - Thời gian chờ > 15 giây
+        // Node tự tính thời gian đến mini_cycle tiếp theo:
+        // - sleepTime > 1 phút → vào light-sleep, wake sớm 10s
+        // - sleepTime <= 1 phút → không ngủ, chờ đo
+        // Wake sources: Timer, UART (lệnh từ Bridge), GPIO33 (Bridge pulse)
         if (_cycleState == STATE_IDLE && !_isUartWakeup) {
-            _handleLightSleep();
+            unsigned long sleepTime = _calcSleepTime();
+            if (sleepTime > T_IDLE_BEFORE_SLEEP) {
+                Serial.printf("[AUTO] Next measurement in %lu sec (> 60s), entering light-sleep...\n", sleepTime / 1000);
+                _handleLightSleep();
+            }
+            // Nếu <= 1 phút thì không ngủ, chờ đo (không cần log vì sẽ spam)
         }
         
         vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -112,7 +118,8 @@ void StateMachine::processRawCommand(String rawLine) {
     CommandData cmd = _cmdProcessor.parse(rawLine);
     
     if (!cmd.isValid) {
-        Serial.println("[CMD] Invalid command received, ignoring...");
+        Serial.println("[CMD] Invalid command received, sending current status...");
+        _sendMachineStatus();  // Gửi status hiện tại để Server biết Node đã nhận được nhưng lệnh không hợp lệ
         return;
     }
 
@@ -127,12 +134,14 @@ void StateMachine::processRawCommand(String rawLine) {
 
     if (cmd.setMode == MODE_TIMESTAMP) {
         if (cmd.timestamp == 0) {
-            Serial.println("[CMD] Time sync ignored (timestamp=0 or null)");
+            Serial.println("[CMD] Time sync ignored (timestamp=0 or null), sending current status...");
+            _sendMachineStatus();  // Vẫn gửi ACK để Server biết đã nhận
             return;
         }
-        Serial.printf("[CMD] Time sync: %lu\n", cmd.timestamp);
+        Serial.printf("[CMD] Time sync received: %lu\n", cmd.timestamp);
         _timeSync.updateEpoch(cmd.timestamp);
         _recalcGrid();
+        Serial.println("[CMD] Time sync applied, sending ACK...");
         _sendMachineStatus();
         return;
     }
@@ -146,12 +155,21 @@ void StateMachine::processRawCommand(String rawLine) {
         }
         if (cmd.autoMeasureCount > 0) {
             _status.saved_daily_measures = cmd.autoMeasureCount;
+            Serial.printf("[AUTO] Updated measurementCount to %d\n", cmd.autoMeasureCount);
             _recalcGrid();
             hasChanges = true;
         }
         if (cmd.startTimeSeconds > 0) {
             _startTimeSeconds = cmd.startTimeSeconds;
+            Serial.printf("[AUTO] Updated startTime to %lu seconds\n", cmd.startTimeSeconds);
             hasChanges = true;
+        }
+        
+        // Nếu có thay đổi cấu hình AUTO, gửi ACK ngay
+        if (hasChanges) {
+            Serial.println("[AUTO] Config updated, sending ACK...");
+            _sendMachineStatus();
+            return;
         }
     }
     else if (cmd.setMode == MODE_MANUAL) {
@@ -170,8 +188,16 @@ void StateMachine::processRawCommand(String rawLine) {
         }
         if (cmd.manualInterval > 0) {
             _status.saved_manual_cycle = cmd.manualInterval;
+            Serial.printf("[MANUAL] Updated interval to %d minutes\n", cmd.manualInterval);
             _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
             hasChanges = true;
+        }
+        
+        // Nếu có thay đổi MANUAL config, gửi ACK ngay
+        if (hasChanges) {
+            Serial.println("[MANUAL] Config updated, sending ACK...");
+            _sendMachineStatus();
+            return;
         }
     }
 
@@ -418,8 +444,11 @@ void StateMachine::_enterDeepSleep() {
 void StateMachine::_handleLightSleep() {
     unsigned long sleepTime = _calcSleepTime();
     
-    // Chỉ ngủ nếu > 15 giây (cho phép wake 10s trước khi cần đo)
-    if (sleepTime < 15000) return; 
+    // Chỉ ngủ nếu > 1 phút (đã kiểm tra ở update() nhưng double-check)
+    if (sleepTime < T_IDLE_BEFORE_SLEEP) {
+        Serial.println("[PWR] Sleep time too short, staying awake");
+        return;
+    } 
     
     // Đặt thời gian wake sớm 10 giây để chuẩn bị
     unsigned long actualSleep = sleepTime - 10000;

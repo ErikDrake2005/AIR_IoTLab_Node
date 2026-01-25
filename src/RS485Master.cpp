@@ -21,21 +21,13 @@ void RS485Master::_receiveMode()  { digitalWrite(_dePin, LOW); }
 bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) {
     // Xả buffer cũ
     while (_serial.available()) _serial.read(); 
-    
-    // Chuyển sang chế độ truyền
     _transmitMode();
-    delay(5);  // [FIX] Dùng delay() blocking thay vì vTaskDelay để đảm bảo timing
-    
+    delay(5);
     // Gửi lệnh
     _serial.printf(":S%d,CMD%d\n", slaveId, cmd);
     _serial.flush();
-    
-    delay(5);  // [FIX] Đợi gửi xong
-    
-    // Chuyển về chế độ nhận
+    delay(5);
     _receiveMode();
-    
-    // Chờ ACK
     unsigned long start = millis();
     while (millis() - start < timeoutMs) {
         if (_serial.available()) {
@@ -47,7 +39,7 @@ bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) 
                 return true;
             }
         }
-        delay(10); // [FIX] Dùng delay() thay vì vTaskDelay
+        delay(10);
     }
     
     Serial.printf("[RS485] TIMEOUT waiting ACK from S%d CMD%d\n", slaveId, cmd);
@@ -60,10 +52,10 @@ String RS485Master::readResponse(uint16_t timeoutMs) {
         if (_serial.available()) {
             String line = _serial.readStringUntil('\n');
             line.trim();
-            Serial.printf("[RS485] RX DATA: %s\n", line.c_str());  // [DEBUG]
+            Serial.printf("[RS485] RX DATA: %s\n", line.c_str());
             if (line.startsWith(":S")) return line;
         }
-        delay(10); // [FIX] Dùng delay() thay vì vTaskDelay
+        delay(10);
     }
     Serial.println("[RS485] TIMEOUT waiting DATA");
     return "";
