@@ -10,6 +10,7 @@ const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
 const unsigned long T_UART_WAIT = 15000;
 const unsigned long T_IDLE_BEFORE_SLEEP = 60000;  // 1 phút chờ trước khi ngủ
+const unsigned long TIME_SYNC_RETRY_INTERVAL = 30000;  // Retry time_req every 30s if not synced
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
     : _meas(meas), _relay(relay), _cmd(cmd), _timeSync(timeSync) 
@@ -27,6 +28,7 @@ StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTComman
     _isUartWakeup = false;
     _uartWakeupMs = 0;
     _nextManualRun = 0;
+    _lastTimeSyncRequest = 0;
     
     _resetMiniData();
 }
@@ -53,6 +55,7 @@ void StateMachine::begin() {
     
     Serial.println("[BOOT] Requesting time sync...");
     _sendPacket(_jsonFormatter.createTimeSyncRequest());
+    _lastTimeSyncRequest = millis();
 }
 
 void StateMachine::update() {
@@ -62,6 +65,17 @@ void StateMachine::update() {
         _sendMachineStatus();
         _stopRequested = false;
         return;
+    }
+
+    // ═══ TIME SYNC RETRY: If timestamp=0, request time sync again ═══
+    unsigned long currentTime = _timeSync.getCurrentTime();
+    if (currentTime == 0) {
+        unsigned long now = millis();
+        if (now - _lastTimeSyncRequest >= TIME_SYNC_RETRY_INTERVAL) {
+            Serial.println("[TIME] Timestamp=0, requesting time sync again...");
+            _sendPacket(_jsonFormatter.createTimeSyncRequest());
+            _lastTimeSyncRequest = now;
+        }
     }
 
     if (_status.mode == MODE_AUTO && _cycleState != STATE_IDLE) {
@@ -165,12 +179,7 @@ void StateMachine::processRawCommand(String rawLine) {
             hasChanges = true;
         }
         
-        // Nếu có thay đổi cấu hình AUTO, gửi ACK ngay
-        if (hasChanges) {
-            Serial.println("[AUTO] Config updated, sending ACK...");
-            _sendMachineStatus();
-            return;
-        }
+        // KHÔNG return ở đây - tiếp tục xử lý actions bên dưới
     }
     else if (cmd.setMode == MODE_MANUAL) {
         if (_status.mode != MODE_MANUAL) {
@@ -193,14 +202,10 @@ void StateMachine::processRawCommand(String rawLine) {
             hasChanges = true;
         }
         
-        // Nếu có thay đổi MANUAL config, gửi ACK ngay
-        if (hasChanges) {
-            Serial.println("[MANUAL] Config updated, sending ACK...");
-            _sendMachineStatus();
-            return;
-        }
+        // KHÔNG return ở đây - tiếp tục xử lý actions bên dưới
     }
 
+    // Xử lý actions (chamberStatus, doorStatus, fanStatus)
     if (cmd.hasActions) {
         if (!cmd.chamberStatus.isEmpty()) {
             if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop-measurement") {

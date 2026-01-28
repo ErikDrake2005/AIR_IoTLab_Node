@@ -46,6 +46,7 @@ private:
     
     bool _isUartWakeup;
     unsigned long _uartWakeupMs;
+    unsigned long _lastTimeSyncRequest;  // Track last time_req to avoid spam
     
     std::vector<ScheduleTime> _schedules;
     int _lastTriggerMin;
