@@ -3,9 +3,8 @@
 #include "SHT31Sensor.h"
 #include "JsonFormatter.h"
 
-// --- CẤU HÌNH RETRY CHO CẢM BIẾN ---
-const int SENSOR_MAX_RETRIES = 2;           // Số lần thử tối đa
-const unsigned long SENSOR_RETRY_DELAY_MS = 3000; // Timeout 3 giây giữa các lần thử
+const int SENSOR_MAX_RETRIES = 2; //Retry Count
+const unsigned long SENSOR_RETRY_DELAY_MS = 3000;
 
 Measurement::Measurement(RS485Master& rs485, SHT31Sensor& sht31, JsonFormatter& json)
     : _rs485(rs485), _sht31(sht31), _json(json) {
@@ -21,13 +20,11 @@ bool Measurement::doFullMeasurement(String& outputJson) {
     MeasurementData data;
     doFullMeasurement(data); 
     outputJson = _json.createDataJson(data.ch4, data.co, data.alc, data.nh3, data.h2, data.temp, data.hum);
-    return true; // Luôn báo thành công để gửi đi
+    return true; 
 }
 
 bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, UrgentCheckCallback checkCallback) {
     _lastError = "";
-    
-    // Helper lambda để chờ với check abort và callback
     auto delayWithCheck = [&](unsigned long ms) {
         unsigned long end = millis() + ms;
         while (millis() < end) {
@@ -36,12 +33,8 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
             if (abortFlag && *abortFlag) return;
         }
     };
-    
-    // 1. KHỞI TẠO MẶC ĐỊNH LÀ -1 (Lỗi)
     float ch4 = -1.0, co = -1.0, alc = -1.0, nh3 = -1.0, h2 = -1.0;
     float temp = -1.0, hum = -1.0;
-
-    // --- BƯỚC 1: ĐO SHT31 (với retry) ---
     Serial.println("[MEAS] Reading SHT31...");
     bool sht31Success = false;
     for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
@@ -68,8 +61,6 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
     
     if (abortFlag && *abortFlag) return false;
     vTaskDelay(100 / portTICK_PERIOD_MS);
-
-    // --- BƯỚC 2: ĐO CH4 (SLAVE 1) (với retry) ---
     Serial.println("[MEAS] Reading CH4 (Slave 1)...");
     bool ch4Success = false;
     for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
@@ -96,8 +87,6 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
 
     if (abortFlag && *abortFlag) return false;
     vTaskDelay(100 / portTICK_PERIOD_MS);
-
-    // --- BƯỚC 3: ĐO KHÍ ĐỘC MICS5524 (SLAVE 2) (với retry) ---
     Serial.println("[MEAS] Reading MICS (Slave 2)...");
     bool micsSuccess = false;
     for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
@@ -122,17 +111,11 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
         co = -1.0; alc = -1.0; nh3 = -1.0; h2 = -1.0;
         if (_lastError == "") _lastError = "mics";
     }
-
-    // Gán dữ liệu vào struct trả về
     data.ch4 = ch4;
     data.co = co; data.alc = alc; data.nh3 = nh3; data.h2 = h2;
     data.temp = temp; data.hum = hum;
-
-    // QUAN TRỌNG: Luôn trả về true để StateMachine không dừng chu trình
     return true; 
 }
-
-// --- CÁC HÀM CON (GIỮ NGUYÊN) ---
 bool Measurement::measureCH4(float &ch4) {
     if (!_rs485.sendCommand(1, 2, 1000)) return false; 
     String resp = _rs485.readResponse(2000); 

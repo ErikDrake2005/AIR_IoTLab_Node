@@ -1,7 +1,6 @@
 #pragma once
 #include <Arduino.h>
 
-// --- CÁC ĐỊNH NGHĨA CONSTANT (HẰNG SỐ) ---
 #define MAX_JSON_SIZE 1024  // Kích thước tối đa cho gói tin JSON
 
 enum SystemMode {
@@ -11,8 +10,6 @@ enum SystemMode {
     MODE_SLEEP = 3
 };
 
-// Trạng thái chu trình đo (Cycle States)
-// Đã bổ sung các trạng thái WAIT cho Auto Cycle 3 bước
 enum CycleState {
     STATE_IDLE,         // Đang nghỉ/chờ
     STATE_PREPARE,      // Chuẩn bị (đóng cửa, bật quạt)
@@ -22,17 +19,12 @@ enum CycleState {
     STATE_MANUAL_WAIT,  // Chờ trong chế độ Manual (nếu cần)
     STATE_FINISH        // Đã đo xong, xử lý kết quả
 };
-
-// --- STRUCT: GÓI DỮ LIỆU ---
-
-// 1. Trạng thái máy (Dùng để quản lý trạng thái hiện tại của Node)
+//State Machine Status Structure
 struct MachineStatus {
     SystemMode mode;            // AUTO / MANUAL
     bool isMeasuring;           // Đang đo hay không
     bool isDoorOpen;            // Trạng thái cửa
     bool isFanOn;               // Trạng thái quạt
-    
-    // Các thông số đã lưu (Saved Settings)
     int saved_manual_cycle;     // Chu kỳ lấy mẫu Manual (phút)
     int saved_daily_measures;   // Số lần đo Auto/ngày
     
@@ -47,7 +39,7 @@ struct MachineStatus {
     }
 };
 
-// 2. Dữ liệu lệnh từ Server (Parsed Command Data)
+// Server Command Data Structure
 struct CommandData {
     bool isValid;           // Đánh dấu gói tin có hợp lệ không
     String targetNID;       // NID của gói tin

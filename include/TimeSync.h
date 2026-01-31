@@ -10,11 +10,9 @@ public:
     void begin();
     void updateEpoch(unsigned long epoch);                
     void syncFromTimestamp(const String& timeStr); 
-    
     unsigned long getCurrentTime();
     void requestTimeSync();
     String getRequestJson();
-    
     void beforeDeepSleep();
     void afterWakeup();
 

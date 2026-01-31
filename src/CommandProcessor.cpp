@@ -67,7 +67,7 @@ CommandData CommandProcessor::parse(const String& rawInput) {
         Serial.printf("[CMD] Mode parsed: %s\n", s.c_str());
     }
 
-    // 4. Parse chi tiết lệnh trong "cmd"
+    // Parse cmd
     JsonObject rootObj = doc.as<JsonObject>();
     JsonObject cmdObj;
 
@@ -81,15 +81,11 @@ CommandData CommandProcessor::parse(const String& rawInput) {
                 Serial.printf("[CMD] Timestamp (ll): %lu\n", cmd.timestamp);
             }
         }
-        // Nếu là Object (cho Manual/Auto)
         else if (rootObj["cmd"].is<JsonObject>()) {
             cmdObj = rootObj["cmd"];
         }
     }
-
-    // 5. Parse nội dung của cmdObj
     if (!cmdObj.isNull()) {
-        // transmissionIntervalMinutes (cho MANUAL mode)
         if (!cmdObj["transmissionIntervalMinutes"].isNull()) {
             int interval = cmdObj["transmissionIntervalMinutes"].as<int>();
             if (interval > 0 && interval <= 59) {
@@ -111,8 +107,6 @@ CommandData CommandProcessor::parse(const String& rawInput) {
                     Serial.printf("[CMD] Measure count: %d\n", count);
                 }
             }
-            
-            // startTime (cho AUTO mode)
             if (!doObj["startTime"].isNull()) {
                 cmd.autoStartTime = doObj["startTime"].as<String>();
                 int colonIndex = cmd.autoStartTime.indexOf(':');

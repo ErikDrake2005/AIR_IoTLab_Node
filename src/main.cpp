@@ -53,24 +53,19 @@ void machineTask(void* pvParameters) {
 }
 
 void setup() {
-    setCpuFrequencyMhz(240);
-    // --- 1. HANDSHAKE (QUAN TRỌNG NHẤT) ---
+    setCpuFrequencyMhz(80);
     pinMode(PIN_SLEEP_STATUS, OUTPUT);
-    digitalWrite(PIN_SLEEP_STATUS, HIGH); 
-    // --- 2. CẤU HÌNH WAKEUP (GPIO 33) ---
+    digitalWrite(PIN_SLEEP_STATUS, HIGH);
     pinMode(PIN_WAKEUP_GPIO, INPUT_PULLDOWN); 
     esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKEUP_GPIO, 1);
-    // --- 3. Debug & Init ---
     Serial.begin(115200);
     Serial.println("\n=== [BOOT] NODE AIR_VL_01 (Final V2) ===");
-    // Kiểm tra nguyên nhân thức dậy
     esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
     if (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0) {
         Serial.println("[BOOT] Woke up by BRIDGE Trigger!");
     } else {
         Serial.println("[BOOT] Woke up by POWER/TIMER");
     }
-    // --- 4. Init Hardware ---
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
     if(!sht31.begin()) Serial.println("[ERR] SHT31 Init Fail");
     relay.begin(); 
@@ -80,18 +75,14 @@ void setup() {
     relay.OFF_FAN(); 
     relay.OFF(); 
     rs485.begin();
-    // --- 5. Init UART Commander ---
     commandSerial.setRxBufferSize(4096);
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
-    // Flush bất kỳ dữ liệu rác từ bootloader
     delay(100);
     while(commandSerial.available()) commandSerial.read();
     commandSerial.flush();
-    // UARTCommander sẽ tự tạo 2 Task (TX và RX) chạy ngầm
     uartCommander.begin(commandSerial);
     sysMutex = xSemaphoreCreateMutex();
     stateMachine.begin();
-    // --- 6. Create Tasks ---
     xTaskCreatePinnedToCore(machineTask, "MAIN_TASK", 16384, NULL, 1, NULL, 1);
 }
 

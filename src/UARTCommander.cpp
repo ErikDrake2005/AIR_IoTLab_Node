@@ -2,29 +2,22 @@
 #include "CRC32.h"
 #include "PacketDef.h"
 
-// Khai báo instance
 UARTCommander* UARTCommander::instance = nullptr;
 
 UARTCommander::UARTCommander() : _serial(nullptr) {
     instance = this;
-    // Tạo hàng đợi
     _txQueue = xQueueCreate(20, sizeof(UartTxMessage)); 
     _rxQueue = xQueueCreate(20, sizeof(UartRxMessage)); 
 }
 
 void UARTCommander::begin(HardwareSerial& serial) {
     _serial = &serial;
-    
-    // Task TX
     xTaskCreatePinnedToCore(txTask, "UART_TX", 4096, this, 1, NULL, 1);
-    // Task RX
     xTaskCreatePinnedToCore(rxTask, "UART_RX", 4096, this, 1, NULL, 1);
-
     Serial.println("[UART] Commander Init (Queue & Tasks Ready)");
 }
 
-// ======================= TX (GỬI ĐI) =======================
-
+//TX TASK
 void UARTCommander::txTask(void* pvParameters) {
     UARTCommander* self = (UARTCommander*)pvParameters;
     UartTxMessage msg;
@@ -55,18 +48,15 @@ void UARTCommander::enqueueTx(const uint8_t* data, size_t len, const char* debug
 }
 
 void UARTCommander::send(const String& jsonStr) {
-    // Tính CRC
     unsigned long crc = CRC32::calculate(jsonStr);
     String packet = jsonStr + "|" + String(crc, HEX);
-    
-    // LOG TX để debug
     Serial.print("[TX] ");
     Serial.println(packet);
     
     enqueueTx((const uint8_t*)packet.c_str(), packet.length(), "JSON");
 }
 
-// ======================= RX (NHẬN VỀ) =======================
+//RX TASK
 
 void UARTCommander::rxTask(void* pvParameters) {
     UARTCommander* self = (UARTCommander*)pvParameters;
@@ -80,12 +70,10 @@ void UARTCommander::rxTask(void* pvParameters) {
                 
                 if (c == '\n') {
                     if (inputBuffer.length() > 0) {
-                        // LOG RX để debug
                         Serial.print("[RX] ");
                         Serial.println(inputBuffer);
                         
                         UartRxMessage rxMsg;
-                        // Copy cẩn thận để tránh tràn bộ nhớ
                         size_t copyLen = (inputBuffer.length() < sizeof(rxMsg.cmd)) ? inputBuffer.length() : (sizeof(rxMsg.cmd) - 1);
                         strncpy(rxMsg.cmd, inputBuffer.c_str(), copyLen);
                         rxMsg.cmd[copyLen] = '\0'; 
@@ -97,7 +85,6 @@ void UARTCommander::rxTask(void* pvParameters) {
                     }
                 } 
                 else if (c != '\r') {
-                    // [SỬA LỖI TẠI ĐÂY] Đã đổi inputBuf thành inputBuffer
                     if (inputBuffer.length() < 1024) inputBuffer += c; 
                 }
             }
