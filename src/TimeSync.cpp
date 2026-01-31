@@ -49,17 +49,13 @@ unsigned long TimeSync::getCurrentTime() {
 
 
 void TimeSync::beforeDeepSleep() {
-    // Lấy thời gian hiện tại từ RTC
     time_t now;
     time(&now);
-    
-    // Cập nhật lại _epochBase dựa trên thời gian hiện tại
-    // Để khi wake up, giờ sẽ chính xác
     if (_epochBase > 0) {
         // Tính lại elapsed time từ lần cập nhật
         unsigned long currentTime = _epochBase + ((millis() - _syncMillis) / 1000UL);
         _epochBase = currentTime;  // Cập nhật base
-        _syncMillis = millis();     // Reset millis counter
+        _syncMillis = millis(); // Reset millis counter
         
         // Lưu vào RTC của ESP32
         struct timeval tv = { .tv_sec = (time_t)currentTime, .tv_usec = 0 };
@@ -72,21 +68,17 @@ void TimeSync::beforeDeepSleep() {
 
 // Gọi SAU KHI WAKE UP TỪ DEEP SLEEP
 void TimeSync::afterWakeup() {
-    // Lấy thời gian từ RTC (chạy ngầm khi sleep)
     time_t rtcNow;
     time(&rtcNow);
     
     if (_lastRtcTime > 0 && (time_t)_lastRtcTime < rtcNow) {
         unsigned long sleepDuration = (unsigned long)(rtcNow - _lastRtcTime);
-        
-        // Cập nhật epoch dựa trên thời gian ngủ
         _epochBase = (unsigned long)rtcNow;
         _syncMillis = millis();
         
         Serial.printf("[TIME POST-WAKE] RTC: %lu, Sleep duration: %lu sec, Restored: %lu\n", 
                       (unsigned long)rtcNow, sleepDuration, _epochBase);
     } else if (_epochBase > 0) {
-        // Fallback: Tiếp tục từ _epochBase + thời gian đã trôi
         _syncMillis = millis();
     }
 }

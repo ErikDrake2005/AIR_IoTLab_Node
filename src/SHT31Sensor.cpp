@@ -3,17 +3,12 @@
 SHT31Sensor::SHT31Sensor() : _sht31() {
     _initialized = false;
 }
-
-// [QUAN TRỌNG] Phải có "SHT31Sensor::" ở phía trước
-bool SHT31Sensor::begin() {   // <--- KIỂM TRA DÒNG NÀY
-    // Thử địa chỉ 0x44
+bool SHT31Sensor::begin() {
     if (_sht31.begin(0x44)) {
         _initialized = true;
         Serial.println("[SHT31] Init Success at 0x44");
         return true;
     }
-    
-    // Thử địa chỉ 0x45
     if (_sht31.begin(0x45)) {
         _initialized = true;
         Serial.println("[SHT31] Init Success at 0x45");
@@ -27,7 +22,6 @@ bool SHT31Sensor::begin() {   // <--- KIỂM TRA DÒNG NÀY
 
 bool SHT31Sensor::readData(float &temperature, float &humidity) {
     if (!_initialized) {
-        // Thử kết nối lại nếu chưa init được
         if (!begin()) {
             temperature = 0;
             humidity = 0;

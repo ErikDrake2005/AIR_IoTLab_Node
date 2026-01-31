@@ -3,15 +3,11 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include "CommonTypes.h" // <--- Include để lấy struct CommandData chuẩn
-
-// --- XÓA struct CommandData CŨ Ở ĐÂY NẾU CÓ ---
+#include "CommonTypes.h"
 
 class CommandProcessor {
 public:
     CommandProcessor();
-    
-    // Hàm parse trả về CommandData (định nghĩa trong CommonTypes.h)
     CommandData parse(const String& rawInput);
 
 private:

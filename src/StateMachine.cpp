@@ -10,7 +10,7 @@ const unsigned long T_MEASURE_3 = 900000;
 const unsigned long T_TIMEOUT   = 960000;
 const unsigned long T_UART_WAIT = 15000;
 const unsigned long T_IDLE_BEFORE_SLEEP = 60000;  // 1 phút chờ trước khi ngủ
-const unsigned long TIME_SYNC_RETRY_INTERVAL = 30000;  // Retry time_req every 30s if not synced
+const unsigned long TIME_SYNC_RETRY_INTERVAL = 30000; 
 
 StateMachine::StateMachine(Measurement& meas, RelayController& relay, UARTCommander& cmd, TimeSync& timeSync)
     : _meas(meas), _relay(relay), _cmd(cmd), _timeSync(timeSync) 
@@ -67,7 +67,7 @@ void StateMachine::update() {
         return;
     }
 
-    // ═══ TIME SYNC RETRY: If timestamp=0, request time sync again ═══
+    //TIME SYNC RETRY: If timestamp=0, request time sync again
     unsigned long currentTime = _timeSync.getCurrentTime();
     if (currentTime == 0) {
         unsigned long now = millis();
@@ -110,18 +110,13 @@ void StateMachine::update() {
             return;
         }
         
-        // ═══ LIGHT-SLEEP TRONG AUTO MODE ═══
-        // Node tự tính thời gian đến mini_cycle tiếp theo:
-        // - sleepTime > 1 phút → vào light-sleep, wake sớm 10s
-        // - sleepTime <= 1 phút → không ngủ, chờ đo
-        // Wake sources: Timer, UART (lệnh từ Bridge), GPIO33 (Bridge pulse)
+        // LIGHT-SLEEP TRONG AUTO MODE
         if (_cycleState == STATE_IDLE && !_isUartWakeup) {
             unsigned long sleepTime = _calcSleepTime();
             if (sleepTime > T_IDLE_BEFORE_SLEEP) {
                 Serial.printf("[AUTO] Next measurement in %lu sec (> 60s), entering light-sleep...\n", sleepTime / 1000);
                 _handleLightSleep();
             }
-            // Nếu <= 1 phút thì không ngủ, chờ đo (không cần log vì sẽ spam)
         }
         
         vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -201,11 +196,8 @@ void StateMachine::processRawCommand(String rawLine) {
             _nextManualRun = millis() + (_status.saved_manual_cycle * 60000UL);
             hasChanges = true;
         }
-        
-        // KHÔNG return ở đây - tiếp tục xử lý actions bên dưới
     }
 
-    // Xử lý actions (chamberStatus, doorStatus, fanStatus)
     if (cmd.hasActions) {
         if (!cmd.chamberStatus.isEmpty()) {
             if (cmd.chamberStatus == "stop" || cmd.chamberStatus == "stop-measurement") {
@@ -413,25 +405,23 @@ void StateMachine::_setFan(bool on) {
 void StateMachine::_enterDeepSleep() {
     Serial.println("[PWR] Preparing for Deep Sleep...");
     
-    // 1. Reset về trạng thái an toàn
+    //Reset trạng thái máy
     _cycleState = STATE_IDLE;
     _status.isMeasuring = false;
-    _status.mode = MODE_MANUAL;  // Reset về MANUAL mode
-    
-    // 2. Tắt fan, mở door (trạng thái an toàn)
+    _status.mode = MODE_MANUAL;  // Reset
+    //  Tắt fan, mở door
     _setFan(false);
     _setDoor(true);
     
     Serial.println("[PWR] State reset: MANUAL, stop, door open, fan off");
-    
-    // 3. Gửi ACK
+    //  ACK
     _sendPacket(_jsonFormatter.createAck("SLEEP"));
     vTaskDelay(500 / portTICK_PERIOD_MS);
     
-    // 4. Lưu thời gian trước khi ngủ
+    //  Lưu thời gian trước khi ngủ
     _timeSync.beforeDeepSleep();
     
-    // 5. Set GPIO32 LOW để báo Bridge biết Node đang ngủ
+    // Set GPIO32 LOW để báo Bridge biết Node đang ngủ
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     Serial.println("[PWR] GPIO32 LOW - signaling Bridge that Node is sleeping");
@@ -441,52 +431,37 @@ void StateMachine::_enterDeepSleep() {
     Serial.flush();
     vTaskDelay(100 / portTICK_PERIOD_MS);
     
-    // 6. Vào deep-sleep - chỉ wake bằng GPIO33 từ Bridge
+    //  Vào deep-sleep
     esp_deep_sleep_start();
-    // Không trở về từ đây - ESP32 sẽ reset khi wake
 }
 
 void StateMachine::_handleLightSleep() {
     unsigned long sleepTime = _calcSleepTime();
-    
-    // Chỉ ngủ nếu > 1 phút (đã kiểm tra ở update() nhưng double-check)
+    // Chỉ ngủ nếu > 1 phút
     if (sleepTime < T_IDLE_BEFORE_SLEEP) {
         Serial.println("[PWR] Sleep time too short, staying awake");
         return;
     } 
-    
-    // Đặt thời gian wake sớm 10 giây để chuẩn bị
     unsigned long actualSleep = sleepTime - 10000;
-    
     Serial.printf("[PWR] Light Sleep for %lu ms (wake 10s early)\n", actualSleep);
     Serial.flush();
-    
-    // Cấu hình wake-up sources
-    esp_sleep_enable_timer_wakeup(actualSleep * 1000ULL);  // Timer wake
-    esp_sleep_enable_uart_wakeup(UART_NUM_1);              // UART wake (từ Bridge)
+    // wake-up sources
+    esp_sleep_enable_timer_wakeup(actualSleep * 1000ULL);
+    esp_sleep_enable_uart_wakeup(UART_NUM_1);
     #ifdef PIN_WAKEUP_GPIO
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKEUP_GPIO, 1);  // GPIO33 wake
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)PIN_WAKEUP_GPIO, 1);
     #endif
-    
-    // Set GPIO32 LOW để báo Bridge biết Node đang light-sleep
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, LOW);
     #endif
     
     // Vào light-sleep
     esp_light_sleep_start();
-    
-    // Wake up - set GPIO32 HIGH lại
     #ifdef PIN_SLEEP_STATUS
     digitalWrite(PIN_SLEEP_STATUS, HIGH);
     #endif
-    
-    // Khôi phục thời gian sau khi wake
-    _timeSync.afterWakeup(); 
-    
-    // Kiểm tra nguyên nhân wake-up
+    _timeSync.afterWakeup();
     esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
-    
     if (wakeupCause == ESP_SLEEP_WAKEUP_UART) {
         Serial.println("[PWR] Woke up by UART (command from Bridge)");
         // Clear buffer
@@ -510,8 +485,8 @@ unsigned long StateMachine::_calcSleepTime() {
 
     if (_cycleState != STATE_IDLE) {
         if (_cycleState == STATE_PREPARE) return (T_MEASURE_1 > elapsed) ? (T_MEASURE_1 - elapsed) : 0;
-        if (_cycleState == STATE_WAIT_1)  return (T_MEASURE_2 > elapsed) ? (T_MEASURE_2 - elapsed) : 0;
-        if (_cycleState == STATE_WAIT_2)  return (T_MEASURE_3 > elapsed) ? (T_MEASURE_3 - elapsed) : 0;
+        if (_cycleState == STATE_WAIT_1) return (T_MEASURE_2 > elapsed) ? (T_MEASURE_2 - elapsed) : 0;
+        if (_cycleState == STATE_WAIT_2) return (T_MEASURE_3 > elapsed) ? (T_MEASURE_3 - elapsed) : 0;
         return 0;
     }
     if (now < 100000) return 0;
@@ -568,9 +543,9 @@ bool StateMachine::_checkGrid() {
 
 void StateMachine::_sendMachineStatus() {
     String modeStr = (_status.mode == MODE_AUTO) ? "AUTO" : "MANUAL";
-    int chamberStatus = _status.isMeasuring ? 1 : 0;  // 1=measuring, 0=stop
-    int doorStatus = _status.isDoorOpen ? 1 : 0;      // 1=open, 0=close
-    int fanStatus = _status.isFanOn ? 1 : 0;          // 1=on, 0=off
+    int chamberStatus = _status.isMeasuring ? 1 : 0; // 1=measuring, 0=stop
+    int doorStatus = _status.isDoorOpen ? 1 : 0; // 1=open, 0=close
+    int fanStatus = _status.isFanOn ? 1 : 0; // 1=on, 0=off
     
     String json = _jsonFormatter.createMachineStatus(
         modeStr, chamberStatus, doorStatus, fanStatus, 

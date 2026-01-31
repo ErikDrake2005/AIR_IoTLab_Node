@@ -35,24 +35,18 @@ private:
     JsonFormatter _jsonFormatter; 
     MachineStatus _status;
     CycleState _cycleState;
-    
     bool _stopRequested;
     unsigned long _gridInterval;
     unsigned long _startTimeSeconds; 
     unsigned long _manualIntervalMs; 
     unsigned long _nextManualRun;
-    
     unsigned long _cycleStartMs;
-    
     bool _isUartWakeup;
     unsigned long _uartWakeupMs;
-    unsigned long _lastTimeSyncRequest;  // Track last time_req to avoid spam
-    
+    unsigned long _lastTimeSyncRequest;
     std::vector<ScheduleTime> _schedules;
     int _lastTriggerMin;
-    
     MeasurementData _miniData[3]; 
-
     void _applyCommand(CommandData& cmd);
     void _startAutoCycle();     
     void _processAutoCycle();  

@@ -27,12 +27,12 @@ String JsonFormatter::createDataJson(float ch4, float co, float alc, float nh3, 
     doc["type"] = "data";
     JsonObject content = doc["content"].to<JsonObject>();
     content["temp"] = round2(temp);
-    content["hum"]  = round2(hum);
-    content["co"]   = round2(co);
-    content["nh3"]  = round2(nh3);
-    content["h2"]   = round2(h2);
-    content["c2h5oh"] = round2(alc); // alc mapped to c2h5oh
-    content["ch4"]  = round2(ch4);
+    content["hum"] = round2(hum);
+    content["co"] = round2(co);
+    content["nh3"] = round2(nh3);
+    content["h2"] = round2(h2);
+    content["c2h5oh"] = round2(alc); 
+    content["ch4"] = round2(ch4);
     content["timestamp"] = getTimestamp();
     
     String output;
@@ -45,14 +45,12 @@ String JsonFormatter::createMachineStatus(String mode, int chamberStatus, int do
     doc["type"] = "machine_status";
     JsonObject content = doc["content"].to<JsonObject>();
     content["mode"] = mode;                 
-    content["chamberStatus"] = chamberStatus;  // 1=measuring, 0=stop
-    content["doorStatus"] = doorStatus;        // 1=open, 0=close
-    content["fanStatus"] = fanStatus;          // 1=on, 0=off
+    content["chamberStatus"] = chamberStatus; 
+    content["doorStatus"] = doorStatus; 
+    content["fanStatus"] = fanStatus; 
     content["saved_manual_cycle"] = manualCycle;
     content["saved_daily_meansure"] = measuresPerDay;
     content["timestamp"] = getTimestamp();
-    // batt để null hoặc không gửi nếu Node không đo pin
-    
     String output;
     serializeJson(doc, output);
     return output;

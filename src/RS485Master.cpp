@@ -1,7 +1,5 @@
-// src/RS485Master.cpp
 #include "RS485Master.h"
 
-// --- TIMEOUT CHO RS485 ---
 const uint16_t RS485_CMD_TIMEOUT_MS = 2000;    // Timeout cho lệnh gửi đi
 const uint16_t RS485_RESPONSE_TIMEOUT_MS = 2500; // Timeout cho phản hồi
 
@@ -19,11 +17,9 @@ void RS485Master::_transmitMode() { digitalWrite(_dePin, HIGH); }
 void RS485Master::_receiveMode()  { digitalWrite(_dePin, LOW); }
 
 bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) {
-    // Xả buffer cũ
     while (_serial.available()) _serial.read(); 
     _transmitMode();
     delay(5);
-    // Gửi lệnh
     _serial.printf(":S%d,CMD%d\n", slaveId, cmd);
     _serial.flush();
     delay(5);
@@ -77,9 +73,9 @@ bool RS485Master::parseMICS(const String& line, float& co, float& alc, float& nh
     
     if (p1 == -1 || p2 == -1 || p3 == -1) return false;
     
-    co  = line.substring(9, p1).toFloat();
+    co = line.substring(9, p1).toFloat();
     alc = line.substring(p1 + 1, p2).toFloat();
     nh3 = line.substring(p2 + 1, p3).toFloat();
-    h2  = line.substring(p3 + 1).toFloat();
+    h2 = line.substring(p3 + 1).toFloat();
     return true;
 }
