@@ -22,16 +22,13 @@ float round2(float val) {
     return (int)(val * 100 + 0.5) / 100.0;
 }
 
-String JsonFormatter::createDataJson(float ch4, float co, float alc, float nh3, float h2, float temp, float hum) {
+String JsonFormatter::createDataJson(float co2, float ch4, float temp, float hum) {
     JsonDocument doc;
     doc["type"] = "data";
     JsonObject content = doc["content"].to<JsonObject>();
     content["temp"] = round2(temp);
     content["hum"] = round2(hum);
-    content["co"] = round2(co);
-    content["nh3"] = round2(nh3);
-    content["h2"] = round2(h2);
-    content["c2h5oh"] = round2(alc); 
+    content["co2"] = round2(co2);
     content["ch4"] = round2(ch4);
     content["timestamp"] = getTimestamp();
     

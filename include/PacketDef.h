@@ -17,7 +17,7 @@ enum FixedPacketType : uint8_t {
     PKT_LEGACY           = 0xFF,  // Fallback to dictionary encoding
 };
 
-// ── UPLINK_DATA: Sensor readings (21 bytes total) ──
+// ── UPLINK_DATA: Sensor readings (17 bytes total) ──
 // Removed rssi/snr, added isSleeping
 #pragma pack(push, 1)
 struct UplinkDataPacket {
@@ -27,11 +27,8 @@ struct UplinkDataPacket {
     uint8_t  isSleeping; // 0=Node awake, 1=Node sleeping
     int16_t  tempX100;   // Temperature x100 (e.g., 2750 = 27.50°C)
     int16_t  humX100;    // Humidity x100 (e.g., 6500 = 65.00%)
+    int16_t  co2;        // CO2 ppm
     int16_t  ch4;        // CH4 ppm
-    int16_t  co;         // CO ppm
-    int16_t  nh3;        // NH3 ppm
-    int16_t  h2;         // H2 ppm
-    int16_t  c2h5oh;     // C2H5OH (alcohol) ppm
     uint32_t timestamp;  // Unix epoch (local time)
 };
 #pragma pack(pop)
@@ -162,6 +159,7 @@ const char* const DICTIONARY[] = {
     "door",
     "fan",
     "snr",
+    "co2",
     
     NULL // Điểm kết thúc
 };
@@ -250,7 +248,7 @@ class FixedPacket {
 public:
     // ── BRIDGE: Encode Uplink DATA packet (Node JSON → Fixed Binary) ──
     // Input: Parsed JSON from Node + Bridge metadata (deviceId, pin, isSleeping)
-    // Output: Fixed-schema binary packet (21 bytes)
+    // Output: Fixed-schema binary packet (17 bytes)
     static int encodeUplinkData(JsonDocument& nodeDoc, uint8_t deviceId, uint16_t pinMv, 
                                  bool nodeSleeping, uint8_t* buffer) {
         UplinkDataPacket pkt;
@@ -265,11 +263,8 @@ public:
         JsonObject content = nodeDoc["content"];
         pkt.tempX100 = (int16_t)(content["temp"].as<float>() * 100);
         pkt.humX100  = (int16_t)(content["hum"].as<float>() * 100);
+        pkt.co2      = content["co2"].as<int16_t>();
         pkt.ch4      = content["ch4"].as<int16_t>();
-        pkt.co       = content["co"].as<int16_t>();
-        pkt.nh3      = content["nh3"].as<int16_t>();
-        pkt.h2       = content["h2"].as<int16_t>();
-        pkt.c2h5oh   = content["c2h5oh"].as<int16_t>();
         pkt.timestamp = content["timestamp"].as<uint32_t>();
         
         memcpy(buffer, &pkt, sizeof(pkt));
@@ -478,11 +473,8 @@ public:
                 JsonObject content = node["content"].to<JsonObject>();
                 content["temp"] = pkt->tempX100 / 100.0f;
                 content["hum"] = pkt->humX100 / 100.0f;
+                content["co2"] = pkt->co2;
                 content["ch4"] = pkt->ch4;
-                content["co"] = pkt->co;
-                content["nh3"] = pkt->nh3;
-                content["h2"] = pkt->h2;
-                content["c2h5oh"] = pkt->c2h5oh;
                 content["timestamp"] = pkt->timestamp;
                 return true;
             }

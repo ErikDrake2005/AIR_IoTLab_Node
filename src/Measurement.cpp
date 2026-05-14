@@ -1,13 +1,11 @@
 #include "Measurement.h"
-#include "RS485Master.h"
-#include "SHT31Sensor.h"
 #include "JsonFormatter.h"
 
-const int SENSOR_MAX_RETRIES = 2; //Retry Count
+const int SENSOR_MAX_RETRIES = 3;
 const unsigned long SENSOR_RETRY_DELAY_MS = 3000;
 
-Measurement::Measurement(RS485Master& rs485, SHT31Sensor& sht31, JsonFormatter& json)
-    : _rs485(rs485), _sht31(sht31), _json(json) {
+Measurement::Measurement(SensorRegistry& sensors, JsonFormatter& json)
+    : _sensors(sensors), _json(json) {
     _lastError = "";
 }
 
@@ -15,16 +13,35 @@ String Measurement::getLastError() {
     return _lastError;
 }
 
-// Wrapper: Luôn tạo JSON DATA thay vì JSON ERROR
 bool Measurement::doFullMeasurement(String& outputJson) {
     MeasurementData data;
-    doFullMeasurement(data); 
-    outputJson = _json.createDataJson(data.ch4, data.co, data.alc, data.nh3, data.h2, data.temp, data.hum);
-    return true; 
+    doFullMeasurement(data);
+    outputJson = _json.createDataJson(data.co2, data.ch4, data.temp, data.hum);
+    return true;
+}
+
+static void applyReading(const SensorReading& reading, MeasurementData& data) {
+    switch (reading.type) {
+        case SensorType::Co2:
+            data.co2 = reading.value1;
+            break;
+        case SensorType::Ch4:
+            data.ch4 = reading.value1;
+            break;
+        case SensorType::TempHum:
+            data.temp = reading.value1;
+            data.hum = reading.value2;
+            break;
+    }
 }
 
 bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, UrgentCheckCallback checkCallback) {
     _lastError = "";
+    data.co2 = -1.0f;
+    data.ch4 = -1.0f;
+    data.temp = -1.0f;
+    data.hum = -1.0f;
+
     auto delayWithCheck = [&](unsigned long ms) {
         unsigned long end = millis() + ms;
         while (millis() < end) {
@@ -33,101 +50,40 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
             if (abortFlag && *abortFlag) return;
         }
     };
-    float ch4 = -1.0, co = -1.0, alc = -1.0, nh3 = -1.0, h2 = -1.0;
-    float temp = -1.0, hum = -1.0;
-    Serial.println("[MEAS] Reading SHT31...");
-    bool sht31Success = false;
-    for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
-        if (abortFlag && *abortFlag) break;
-        
-        if (measureSHT31(temp, hum)) {
-            Serial.printf("[MEAS] SHT31 OK (attempt %d): T=%.2f, H=%.2f\n", attempt, temp, hum);
-            sht31Success = true;
-            break;
-        }
-        
-        Serial.printf("[MEAS] SHT31 Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
-        if (attempt < SENSOR_MAX_RETRIES) {
-            delayWithCheck(SENSOR_RETRY_DELAY_MS);
+
+    const auto& sensors = _sensors.list();
+    for (const auto& sensorPtr : sensors) {
+        if (abortFlag && *abortFlag) return false;
+        if (!sensorPtr) continue;
+
+        ISensor* sensor = sensorPtr.get();
+        bool success = false;
+        SensorReading reading;
+
+        Serial.printf("[MEAS] Reading %s (addr %u)...\n", sensor->name(), sensor->address());
+        for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
             if (abortFlag && *abortFlag) break;
+
+            if (sensor->read(reading)) {
+                Serial.printf("[MEAS] %s OK (attempt %d)\n", sensor->name(), attempt);
+                success = true;
+                break;
+            }
+
+            Serial.printf("[MEAS] %s Failed (attempt %d/%d)\n", sensor->name(), attempt, SENSOR_MAX_RETRIES);
+            if (attempt < SENSOR_MAX_RETRIES) {
+                delayWithCheck(SENSOR_RETRY_DELAY_MS);
+                if (abortFlag && *abortFlag) break;
+            }
         }
-    }
-    
-    if (!sht31Success) {
-        Serial.println("[MEAS] ERROR: SHT31 Failed after retries -> Val = -1");
-        temp = -1.0; hum = -1.0;
-        if (_lastError == "") _lastError = "sht";
-    }
-    
-    if (abortFlag && *abortFlag) return false;
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    Serial.println("[MEAS] Reading CH4 (Slave 1)...");
-    bool ch4Success = false;
-    for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
-        if (abortFlag && *abortFlag) break;
-        
-        if (measureCH4(ch4)) {
-            Serial.printf("[MEAS] CH4 OK (attempt %d): %.2f\n", attempt, ch4);
-            ch4Success = true;
-            break;
+
+        if (!success) {
+            if (_lastError == "") _lastError = sensor->name();
+            continue;
         }
-        
-        Serial.printf("[MEAS] CH4 Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
-        if (attempt < SENSOR_MAX_RETRIES) {
-            delayWithCheck(SENSOR_RETRY_DELAY_MS);
-            if (abortFlag && *abortFlag) break;
-        }
-    }
-    
-    if (!ch4Success) {
-        Serial.println("[MEAS] ERROR: CH4 Failed after retries -> Val = -1");
-        ch4 = -1.0;
-        if (_lastError == "") _lastError = "ch4";
+
+        applyReading(reading, data);
     }
 
-    if (abortFlag && *abortFlag) return false;
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-    Serial.println("[MEAS] Reading MICS (Slave 2)...");
-    bool micsSuccess = false;
-    for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
-        if (abortFlag && *abortFlag) break;
-        
-        if (measureMICS(co, alc, nh3, h2)) {
-            Serial.printf("[MEAS] MICS OK (attempt %d): CO=%.2f, NH3=%.2f, H2=%.2f, C2H5OH=%.2f\n", 
-                          attempt, co, nh3, h2, alc);
-            micsSuccess = true;
-            break;
-        }
-        
-        Serial.printf("[MEAS] MICS Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
-        if (attempt < SENSOR_MAX_RETRIES) {
-            delayWithCheck(SENSOR_RETRY_DELAY_MS);
-            if (abortFlag && *abortFlag) break;
-        }
-    }
-    
-    if (!micsSuccess) {
-        Serial.println("[MEAS] ERROR: MICS Failed after retries -> Val = -1");
-        co = -1.0; alc = -1.0; nh3 = -1.0; h2 = -1.0;
-        if (_lastError == "") _lastError = "mics";
-    }
-    data.ch4 = ch4;
-    data.co = co; data.alc = alc; data.nh3 = nh3; data.h2 = h2;
-    data.temp = temp; data.hum = hum;
-    return true; 
-}
-bool Measurement::measureCH4(float &ch4) {
-    if (!_rs485.sendCommand(1, 2, 1000)) return false; 
-    String resp = _rs485.readResponse(2000); 
-    if (resp == "") return false;
-    return _rs485.parseCH4(resp, ch4);
-}
-bool Measurement::measureMICS(float &co, float &alc, float &nh3, float &h2) {
-    if (!_rs485.sendCommand(2, 2, 1000)) return false;
-    String resp = _rs485.readResponse(2000);
-    if (resp == "") return false;
-    return _rs485.parseMICS(resp, co, alc, nh3, h2);
-}
-bool Measurement::measureSHT31(float &temp, float &hum) {
-    return _sht31.readData(temp, hum);
+    return true;
 }

@@ -25,6 +25,10 @@
 #define RS485_RX_PIN    25
 #define PIN_RS485_DE    4
 
+#define RS485_ADDR_CO2       1
+#define RS485_ADDR_CH4       2
+#define RS485_ADDR_TEMP_HUM  3
+
 // ========== SYSTEM ==========
 #define DEVICE_ID       "AIR_VL_01"
 #define DEFAULT_MEASURES_PER_DAY 4
