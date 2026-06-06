@@ -1,5 +1,6 @@
 #include "Measurement.h"
 #include "JsonFormatter.h"
+#include "Config.h"
 
 const int SENSOR_MAX_RETRIES = 3;
 const unsigned long SENSOR_RETRY_DELAY_MS = 3000;

@@ -48,7 +48,7 @@ void machineTask(void* pvParameters) {
                 }
             }
         }
-        vTaskDelay(20 / portTICK_PERIOD_MS);
+        vTaskDelay(20/portTICK_PERIOD_MS);
     }
 }
 

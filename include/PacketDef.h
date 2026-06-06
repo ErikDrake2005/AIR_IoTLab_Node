@@ -9,7 +9,7 @@ typedef struct { uint8_t payload[512]; size_t length; uint8_t nodeId; } LoraQueu
 struct PacketHeader { uint8_t nodeId; uint32_t counter; };
 // FIXED-SCHEMA PACKET TYPES 
 enum FixedPacketType : uint8_t {
-    PKT_UPLINK_DATA      = 0x01,  // Sensor data (23 bytes)
+    PKT_UPLINK_DATA      = 0x01,  // Sensor data (17 bytes)
     PKT_UPLINK_STATUS    = 0x02,  // Machine status (13 bytes)
     PKT_UPLINK_TIME_REQ  = 0x03,  // Time request (9 bytes)
     PKT_DOWNLINK_TIME    = 0x80,  // Time sync response (5 bytes)
