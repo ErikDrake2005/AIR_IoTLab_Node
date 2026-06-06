@@ -11,11 +11,12 @@ public:
     bool readSensors(); 
     float getCH4();
     float getCO();
-    float getAlcohol();
-    float getNH3();
-    float getH2();
-    bool sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs = 500);
-    String readResponse(uint16_t timeoutMs = 500);
+    float getAlcohol();                                         
+    float getNH3();                                                    
+    float getH2();                   
+    bool sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs = 500);                                                                                                                                             String readResponse(uint16_t timeoutMs = 500);
+    bool readRegisterValue(uint8_t slaveId, uint16_t& value, uint16_t timeoutMs = 500);
+    bool readHoldingRegister(uint8_t slaveId, uint16_t reg, uint16_t& value, uint16_t timeoutMs = 500);
     bool parseCH4(const String& line, float& ch4);
     bool parseMICS(const String& line, float& co, float& alc, float& nh3, float& h2);
 

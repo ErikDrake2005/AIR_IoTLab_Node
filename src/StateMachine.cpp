@@ -291,7 +291,7 @@ void StateMachine::_processAutoCycle() {
 
 void StateMachine::_sendDataPacket(const MeasurementData& data, int sampleNum) {
     String jsonPkt = _jsonFormatter.createDataJson(
-        data.ch4, data.co, data.alc, data.nh3, data.h2, data.temp, data.hum
+        data.co2, data.ch4, data.temp, data.hum
     );
     _sendPacket(jsonPkt);
     Serial.printf("[AUTO] Sample %d sent.\n", sampleNum);
@@ -352,8 +352,7 @@ void StateMachine::_performManualMeasurement() {
         }
         
         String jsonPkt = _jsonFormatter.createDataJson(
-            singleSample.ch4, singleSample.co, singleSample.alc, 
-            singleSample.nh3, singleSample.h2, singleSample.temp, singleSample.hum
+            singleSample.co2, singleSample.ch4, singleSample.temp, singleSample.hum
         );
         _sendPacket(jsonPkt);
     }
@@ -373,9 +372,9 @@ void StateMachine::_resetCycle() {
 
 void StateMachine::_resetMiniData() {
     for(int i=0; i<3; i++) {
-        _miniData[i].ch4 = -1.0f; _miniData[i].co = -1.0f;
-        _miniData[i].alc = -1.0f; _miniData[i].nh3 = -1.0f;
-        _miniData[i].h2 = -1.0f;  _miniData[i].temp = -1.0f;
+        _miniData[i].co2 = -1.0f;
+        _miniData[i].ch4 = -1.0f;
+        _miniData[i].temp = -1.0f;
         _miniData[i].hum = -1.0f;
     }
 }

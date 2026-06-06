@@ -1,13 +1,13 @@
 #include "Measurement.h"
 #include "RS485Master.h"
-#include "SHT31Sensor.h"
 #include "JsonFormatter.h"
+#include "Config.h"
 
 const int SENSOR_MAX_RETRIES = 2; //Retry Count
 const unsigned long SENSOR_RETRY_DELAY_MS = 3000;
 
-Measurement::Measurement(RS485Master& rs485, SHT31Sensor& sht31, JsonFormatter& json)
-    : _rs485(rs485), _sht31(sht31), _json(json) {
+Measurement::Measurement(RS485Master& rs485, JsonFormatter& json)
+    : _rs485(rs485), _json(json) {
     _lastError = "";
 }
 
@@ -19,7 +19,7 @@ String Measurement::getLastError() {
 bool Measurement::doFullMeasurement(String& outputJson) {
     MeasurementData data;
     doFullMeasurement(data); 
-    outputJson = _json.createDataJson(data.ch4, data.co, data.alc, data.nh3, data.h2, data.temp, data.hum);
+    outputJson = _json.createDataJson(data.co2, data.ch4, data.temp, data.hum);
     return true; 
 }
 
@@ -33,30 +33,30 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
             if (abortFlag && *abortFlag) return;
         }
     };
-    float ch4 = -1.0, co = -1.0, alc = -1.0, nh3 = -1.0, h2 = -1.0;
+    float ch4 = -1.0, co2 = -1.0;
     float temp = -1.0, hum = -1.0;
-    Serial.println("[MEAS] Reading SHT31...");
-    bool sht31Success = false;
+    Serial.println("[MEAS] Reading EP32-SW (Slave 3)...");
+    bool tempHumSuccess = false;
     for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
         if (abortFlag && *abortFlag) break;
         
-        if (measureSHT31(temp, hum)) {
-            Serial.printf("[MEAS] SHT31 OK (attempt %d): T=%.2f, H=%.2f\n", attempt, temp, hum);
-            sht31Success = true;
+        if (measureEP32SW(temp, hum)) {
+            Serial.printf("[MEAS] EP32-SW OK (attempt %d): T=%.2f, H=%.2f\n", attempt, temp, hum);
+            tempHumSuccess = true;
             break;
         }
         
-        Serial.printf("[MEAS] SHT31 Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
+        Serial.printf("[MEAS] EP32-SW Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
         if (attempt < SENSOR_MAX_RETRIES) {
             delayWithCheck(SENSOR_RETRY_DELAY_MS);
             if (abortFlag && *abortFlag) break;
         }
     }
     
-    if (!sht31Success) {
-        Serial.println("[MEAS] ERROR: SHT31 Failed after retries -> Val = -1");
+    if (!tempHumSuccess) {
+        Serial.println("[MEAS] ERROR: EP32-SW Failed after retries -> Val = -1");
         temp = -1.0; hum = -1.0;
-        if (_lastError == "") _lastError = "sht";
+        if (_lastError == "") _lastError = "th";
     }
     
     if (abortFlag && *abortFlag) return false;
@@ -87,47 +87,53 @@ bool Measurement::doFullMeasurement(MeasurementData& data, bool* abortFlag, Urge
 
     if (abortFlag && *abortFlag) return false;
     vTaskDelay(100 / portTICK_PERIOD_MS);
-    Serial.println("[MEAS] Reading MICS (Slave 2)...");
-    bool micsSuccess = false;
+    Serial.println("[MEAS] Reading CO2 (Slave 2)...");
+    bool co2Success = false;
     for (int attempt = 1; attempt <= SENSOR_MAX_RETRIES; attempt++) {
         if (abortFlag && *abortFlag) break;
         
-        if (measureMICS(co, alc, nh3, h2)) {
-            Serial.printf("[MEAS] MICS OK (attempt %d): CO=%.2f, NH3=%.2f, H2=%.2f, C2H5OH=%.2f\n", 
-                          attempt, co, nh3, h2, alc);
-            micsSuccess = true;
+        if (measureCO2(co2)) {
+            Serial.printf("[MEAS] CO2 OK (attempt %d): CO2=%.2f\n", attempt, co2);
+            co2Success = true;
             break;
         }
         
-        Serial.printf("[MEAS] MICS Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
+        Serial.printf("[MEAS] CO2 Failed (attempt %d/%d)\n", attempt, SENSOR_MAX_RETRIES);
         if (attempt < SENSOR_MAX_RETRIES) {
             delayWithCheck(SENSOR_RETRY_DELAY_MS);
             if (abortFlag && *abortFlag) break;
         }
     }
     
-    if (!micsSuccess) {
-        Serial.println("[MEAS] ERROR: MICS Failed after retries -> Val = -1");
-        co = -1.0; alc = -1.0; nh3 = -1.0; h2 = -1.0;
-        if (_lastError == "") _lastError = "mics";
+    if (!co2Success) {
+        Serial.println("[MEAS] ERROR: CO2 Failed after retries -> Val = -1");
+        co2 = -1.0;
+        if (_lastError == "") _lastError = "co2";
     }
+    data.co2 = co2;
     data.ch4 = ch4;
-    data.co = co; data.alc = alc; data.nh3 = nh3; data.h2 = h2;
     data.temp = temp; data.hum = hum;
     return true; 
 }
 bool Measurement::measureCH4(float &ch4) {
-    if (!_rs485.sendCommand(1, 2, 1000)) return false; 
-    String resp = _rs485.readResponse(2000); 
-    if (resp == "") return false;
-    return _rs485.parseCH4(resp, ch4);
+    uint16_t value = 0;
+    if (!_rs485.readHoldingRegister(CH4_SLAVE_ID, CH4_DATA_REG, value, 2000)) return false;
+    ch4 = static_cast<float>(value);
+    return true;
 }
-bool Measurement::measureMICS(float &co, float &alc, float &nh3, float &h2) {
-    if (!_rs485.sendCommand(2, 2, 1000)) return false;
-    String resp = _rs485.readResponse(2000);
-    if (resp == "") return false;
-    return _rs485.parseMICS(resp, co, alc, nh3, h2);
+bool Measurement::measureCO2(float &co2) {
+    uint16_t value = 0;
+    if (!_rs485.readHoldingRegister(CO2_SLAVE_ID, CO2_DATA_REG, value, 2000)) return false;
+    co2 = static_cast<float>(value);
+    return true;
 }
-bool Measurement::measureSHT31(float &temp, float &hum) {
-    return _sht31.readData(temp, hum);
+bool Measurement::measureEP32SW(float &temp, float &hum) {
+    uint16_t tempRaw = 0;
+    uint16_t humRaw = 0;
+    if (!_rs485.readHoldingRegister(EP32SW_SLAVE_ID, EP32SW_TEMP_REG, tempRaw, 2000)) return false;
+    if (!_rs485.readHoldingRegister(EP32SW_SLAVE_ID, EP32SW_HUM_REG, humRaw, 2000)) return false;
+    // EP32-SW reports temp/hum scaled by 10 -> divide by 10 to get real value
+    temp = static_cast<float>(tempRaw) / 10.0f;
+    hum = static_cast<float>(humRaw) / 10.0f;
+    return true;
 }

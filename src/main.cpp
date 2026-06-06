@@ -10,7 +10,6 @@
 #include "Measurement.h"
 #include "UARTCommander.h"
 #include "RS485Master.h"
-#include "SHT31Sensor.h"
 #include "CRC32.h"
 #include "driver/rtc_io.h"
 
@@ -19,10 +18,9 @@ SemaphoreHandle_t sysMutex;
 HardwareSerial rs485Serial(2);
 HardwareSerial commandSerial(1);
 RS485Master rs485(rs485Serial, PIN_RS485_DE);
-SHT31Sensor sht31;
 RelayController relay;
 JsonFormatter jsonFormatter;
-Measurement measurement(rs485, sht31, jsonFormatter);
+Measurement measurement(rs485, jsonFormatter);
 UARTCommander uartCommander; 
 TimeSync timeSync(jsonFormatter);
 StateMachine stateMachine(measurement, relay, uartCommander, timeSync);
@@ -48,7 +46,7 @@ void machineTask(void* pvParameters) {
                 }
             }
         }
-        vTaskDelay(20 / portTICK_PERIOD_MS);
+        vTaskDelay(20/portTICK_PERIOD_MS);
     }
 }
 
@@ -66,8 +64,6 @@ void setup() {
     } else {
         Serial.println("[BOOT] Woke up by POWER/TIMER");
     }
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
-    if(!sht31.begin()) Serial.println("[ERR] SHT31 Init Fail");
     relay.begin(); 
     Serial.println("[BOOT] Safety: Door OPEN, Fan OFF");
     relay.ON_DOOR(); 

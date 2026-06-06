@@ -3,6 +3,23 @@
 const uint16_t RS485_CMD_TIMEOUT_MS = 2000;    // Timeout cho lệnh gửi đi
 const uint16_t RS485_RESPONSE_TIMEOUT_MS = 2500; // Timeout cho phản hồi
 
+namespace {
+uint16_t crc16Modbus(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; bit++) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc;
+}
+}
+
 RS485Master::RS485Master(HardwareSerial& serial, uint8_t dePin)
     : _serial(serial), _dePin(dePin) {}
 void RS485Master::begin() {
@@ -16,66 +33,57 @@ void RS485Master::begin() {
 void RS485Master::_transmitMode() { digitalWrite(_dePin, HIGH); }
 void RS485Master::_receiveMode()  { digitalWrite(_dePin, LOW); }
 
-bool RS485Master::sendCommand(uint8_t slaveId, uint8_t cmd, uint16_t timeoutMs) {
-    while (_serial.available()) _serial.read(); 
+bool RS485Master::readHoldingRegister(uint8_t slaveId, uint16_t reg, uint16_t& value, uint16_t timeoutMs) {
+    if (!_initialized) return false;
+
+    while (_serial.available()) _serial.read();
+
+    uint8_t request[8];
+    request[0] = slaveId;
+    request[1] = 0x03;
+    request[2] = static_cast<uint8_t>((reg >> 8) & 0xFF);
+    request[3] = static_cast<uint8_t>(reg & 0xFF);
+    request[4] = 0x00;
+    request[5] = 0x01;
+    uint16_t crc = crc16Modbus(request, 6);
+    request[6] = static_cast<uint8_t>(crc & 0xFF);
+    request[7] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+
     _transmitMode();
     delay(5);
-    _serial.printf(":S%d,CMD%d\n", slaveId, cmd);
+    _serial.write(request, sizeof(request));
     _serial.flush();
     delay(5);
     _receiveMode();
-    unsigned long start = millis();
-    while (millis() - start < timeoutMs) {
-        if (_serial.available()) {
-            String resp = _serial.readStringUntil('\n');
-            resp.trim();
-            Serial.printf("[RS485] RX: %s\n", resp.c_str());  // [DEBUG]
-            if (resp.indexOf(",ACK,") != -1) {
-                Serial.printf("[RS485] ACK received from S%d CMD%d\n", slaveId, cmd);
-                return true;
-            }
-        }
-        delay(10);
-    }
-    
-    Serial.printf("[RS485] TIMEOUT waiting ACK from S%d CMD%d\n", slaveId, cmd);
-    return false;
-}
 
-String RS485Master::readResponse(uint16_t timeoutMs) {
+    uint8_t response[7];
+    size_t received = 0;
     unsigned long start = millis();
-    while (millis() - start < timeoutMs) {
+    while (received < sizeof(response) && (millis() - start < timeoutMs)) {
         if (_serial.available()) {
-            String line = _serial.readStringUntil('\n');
-            line.trim();
-            Serial.printf("[RS485] RX DATA: %s\n", line.c_str());
-            if (line.startsWith(":S")) return line;
+            response[received++] = static_cast<uint8_t>(_serial.read());
+        } else {
+            delay(2);
         }
-        delay(10);
     }
-    Serial.println("[RS485] TIMEOUT waiting DATA");
-    return "";
-}
-bool RS485Master::parseCH4(const String& line, float& ch4) {
-    if (!_initialized) { ch4 = 0; return false; }
-    if (!line.startsWith(":S1,DATA,")) return false;
-    ch4 = line.substring(9).toFloat();
-    return true;
-}
 
-bool RS485Master::parseMICS(const String& line, float& co, float& alc, float& nh3, float& h2) {
-    if (!_initialized) { co = alc = nh3 = h2 = 0; return false; }
-    if (!line.startsWith(":S2,DATA,")) return false;
-    
-    int p1 = line.indexOf(',', 9);
-    int p2 = line.indexOf(',', p1 + 1);
-    int p3 = line.indexOf(',', p2 + 1);
-    
-    if (p1 == -1 || p2 == -1 || p3 == -1) return false;
-    
-    co = line.substring(9, p1).toFloat();
-    alc = line.substring(p1 + 1, p2).toFloat();
-    nh3 = line.substring(p2 + 1, p3).toFloat();
-    h2 = line.substring(p3 + 1).toFloat();
+    if (received != sizeof(response)) {
+        Serial.printf("[RS485] TIMEOUT waiting response from S%d\n", slaveId);
+        return false;
+    }
+
+    if (response[0] != slaveId || response[1] != 0x03 || response[2] != 0x02) {
+        Serial.printf("[RS485] INVALID response header from S%d\n", slaveId);
+        return false;
+    }
+
+    uint16_t respCrc = static_cast<uint16_t>(response[5]) | (static_cast<uint16_t>(response[6]) << 8);
+    uint16_t calcCrc = crc16Modbus(response, 5);
+    if (respCrc != calcCrc) {
+        Serial.printf("[RS485] CRC error from S%d (calc=0x%04X recv=0x%04X)\n", slaveId, calcCrc, respCrc);
+        return false;
+    }
+
+    value = static_cast<uint16_t>(response[3] << 8) | response[4];
     return true;
 }
