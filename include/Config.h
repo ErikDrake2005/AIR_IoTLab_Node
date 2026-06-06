@@ -25,16 +25,9 @@
 #define RS485_RX_PIN    25
 #define PIN_RS485_DE    4
 
-// ========== EP32-SW (Temp/Humidity via RS485 Modbus) ==========
-#define EP32SW_SLAVE_ID 3
-#define EP32SW_TEMP_REG 0x0000
-#define EP32SW_HUM_REG  0x0001
-
-// ========== Gas sensors (RS485 Modbus) ==========
-#define CH4_SLAVE_ID    1
-#define CO2_SLAVE_ID    2
-#define CH4_DATA_REG    0x0001
-#define CO2_DATA_REG    0x0001
+#define RS485_ADDR_CO2       1
+#define RS485_ADDR_CH4       2
+#define RS485_ADDR_TEMP_HUM  3
 
 // ========== SYSTEM ==========
 #define DEVICE_ID       "AIR_VL_01"

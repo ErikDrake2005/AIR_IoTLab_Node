@@ -9,7 +9,8 @@
 #include "RelayController.h"
 #include "Measurement.h"
 #include "UARTCommander.h"
-#include "RS485Master.h"
+#include "ModbusContext.h"
+#include "Sensor.h"
 #include "CRC32.h"
 #include "driver/rtc_io.h"
 
@@ -17,10 +18,11 @@
 SemaphoreHandle_t sysMutex;
 HardwareSerial rs485Serial(2);
 HardwareSerial commandSerial(1);
-RS485Master rs485(rs485Serial, PIN_RS485_DE);
+ModbusContext modbus(rs485Serial, PIN_RS485_DE);
+SensorRegistry sensorRegistry;
 RelayController relay;
 JsonFormatter jsonFormatter;
-Measurement measurement(rs485, jsonFormatter);
+Measurement measurement(sensorRegistry, jsonFormatter);
 UARTCommander uartCommander; 
 TimeSync timeSync(jsonFormatter);
 StateMachine stateMachine(measurement, relay, uartCommander, timeSync);
@@ -70,7 +72,13 @@ void setup() {
     delay(50);
     relay.OFF_FAN(); 
     relay.OFF(); 
-    rs485.begin();
+    modbus.begin();
+    auto co2Sensor = SensorFactory::create(SensorType::Co2, RS485_ADDR_CO2, modbus);
+    auto ch4Sensor = SensorFactory::create(SensorType::Ch4, RS485_ADDR_CH4, modbus);
+    auto tempHumSensor = SensorFactory::create(SensorType::TempHum, RS485_ADDR_TEMP_HUM, modbus);
+    if (co2Sensor) sensorRegistry.addOrUpdate(std::move(co2Sensor));
+    if (ch4Sensor) sensorRegistry.addOrUpdate(std::move(ch4Sensor));
+    if (tempHumSensor) sensorRegistry.addOrUpdate(std::move(tempHumSensor));
     commandSerial.setRxBufferSize(4096);
     commandSerial.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     delay(100);
