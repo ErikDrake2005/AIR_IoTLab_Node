@@ -14,9 +14,12 @@ private:
     HardwareSerial& _serial;
     uint8_t _dePin;
     bool _initialized;
+    bool _hasRequested;
+    unsigned long _lastRequestMs;
 
     static ModbusContext* s_active;
     static void preTransmission();
     static void postTransmission();
+    void waitForRequestInterval();
     void setTransmit(bool enable);
 };

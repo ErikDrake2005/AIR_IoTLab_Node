@@ -3,7 +3,8 @@
 ModbusContext* ModbusContext::s_active = nullptr;
 
 ModbusContext::ModbusContext(HardwareSerial& serial, uint8_t dePin)
-    : _serial(serial), _dePin(dePin), _initialized(false) {}
+    : _serial(serial), _dePin(dePin), _initialized(false),
+      _hasRequested(false), _lastRequestMs(0) {}
 
 void ModbusContext::begin(uint32_t baud) {
     if (_initialized) return;
@@ -22,11 +23,25 @@ void ModbusContext::attach(ModbusMaster& node, uint8_t address) {
 }
 
 void ModbusContext::preTransmission() {
-    if (s_active) s_active->setTransmit(true);
+    if (s_active) {
+        s_active->waitForRequestInterval();
+        s_active->setTransmit(true);
+    }
 }
 
 void ModbusContext::postTransmission() {
     if (s_active) s_active->setTransmit(false);
+}
+
+void ModbusContext::waitForRequestInterval() {
+    if (_hasRequested) {
+        while (millis() - _lastRequestMs < RS485_MIN_REQUEST_INTERVAL_MS) {
+            delay(1);
+        }
+    }
+
+    _lastRequestMs = millis();
+    _hasRequested = true;
 }
 
 void ModbusContext::setTransmit(bool enable) {

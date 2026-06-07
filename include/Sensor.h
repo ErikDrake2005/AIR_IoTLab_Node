@@ -61,8 +61,9 @@ private:
 class EPMedCO2Sensor : public ModbusSensorBase {
 public:
 	static constexpr uint16_t kRegAddress = 0x0000;
-	static constexpr uint16_t kRegCount = 1;
-	static constexpr float kScale = 1.0f;
+	static constexpr uint16_t kRegCount = 2;
+	static constexpr float kMinPpm = 0.0f;
+	static constexpr float kMaxPpm = 100000.0f;
 
 	EPMedCO2Sensor(ModbusContext& ctx, uint8_t address);
 	SensorType type() const override { return SensorType::Co2; }
@@ -77,6 +78,8 @@ public:
 	static constexpr uint16_t kRegAddress = 0x0000;
 	static constexpr uint16_t kRegCount = 1;
 	static constexpr float kScale = 1.0f;
+	static constexpr float kMinPercentLel = 0.0f;
+	static constexpr float kMaxPercentLel = 100.0f;
 
 	EPEnvCH4Sensor(ModbusContext& ctx, uint8_t address);
 	SensorType type() const override { return SensorType::Ch4; }
@@ -86,16 +89,20 @@ protected:
 	bool parseRegisters(SensorReading& out) override;
 };
 
-class EP35SWSensor : public ModbusSensorBase {
+class ES35SWSensor : public ModbusSensorBase {
 public:
 	static constexpr uint16_t kRegAddress = 0x0000;
 	static constexpr uint16_t kRegCount = 2;
 	static constexpr float kTempScale = 0.1f;
 	static constexpr float kHumScale = 0.1f;
+	static constexpr float kMinTempC = -20.0f;
+	static constexpr float kMaxTempC = 80.0f;
+	static constexpr float kMinHumRh = 0.0f;
+	static constexpr float kMaxHumRh = 100.0f;
 
-	EP35SWSensor(ModbusContext& ctx, uint8_t address);
+	ES35SWSensor(ModbusContext& ctx, uint8_t address);
 	SensorType type() const override { return SensorType::TempHum; }
-	const char* name() const override { return "EP35-SW"; }
+	const char* name() const override { return "ES35-SW"; }
 
 protected:
 	bool parseRegisters(SensorReading& out) override;

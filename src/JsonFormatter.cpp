@@ -26,6 +26,8 @@ String JsonFormatter::createDataJson(float co2, float ch4, float temp, float hum
     JsonDocument doc;
     doc["type"] = "data";
     JsonObject content = doc["content"].to<JsonObject>();
+
+    // Measurement report schema: ES35-SW, EP-MED-CO2-01 and EP-ENV-CH4-01 only.
     content["temp"] = round2(temp);
     content["hum"] = round2(hum);
     content["co2"] = round2(co2);

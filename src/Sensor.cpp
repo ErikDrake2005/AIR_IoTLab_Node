@@ -1,4 +1,6 @@
 #include "Sensor.h"
+#include <cmath>
+#include <cstring>
 
 namespace {
 HoldingRegisterStrategy g_holdingStrategy;
@@ -35,8 +37,18 @@ EPMedCO2Sensor::EPMedCO2Sensor(ModbusContext& ctx, uint8_t address)
     : ModbusSensorBase(ctx, address, &g_holdingStrategy, kRegAddress, kRegCount) {}
 
 bool EPMedCO2Sensor::parseRegisters(SensorReading& out) {
-    uint16_t raw = node().getResponseBuffer(0);
-    out.value1 = static_cast<float>(raw) * kScale;
+    // The datasheet defines CO2 as a two-register IEEE-754 floatinverse:
+    // register 0 contains the low word and register 1 contains the high word.
+    uint16_t lowWord = node().getResponseBuffer(0);
+    uint16_t highWord = node().getResponseBuffer(1);
+    uint32_t raw = (static_cast<uint32_t>(highWord) << 16) | lowWord;
+    float ppm = 0.0f;
+    static_assert(sizeof(ppm) == sizeof(raw), "Unexpected float size");
+    memcpy(&ppm, &raw, sizeof(ppm));
+
+    if (!std::isfinite(ppm) || ppm < kMinPpm || ppm > kMaxPpm) return false;
+
+    out.value1 = ppm;
     return true;
 }
 
@@ -45,19 +57,29 @@ EPEnvCH4Sensor::EPEnvCH4Sensor(ModbusContext& ctx, uint8_t address)
 
 bool EPEnvCH4Sensor::parseRegisters(SensorReading& out) {
     uint16_t raw = node().getResponseBuffer(0);
-    out.value1 = static_cast<float>(raw) * kScale;
+    float percentLel = static_cast<float>(raw) * kScale;
+    if (percentLel < kMinPercentLel || percentLel > kMaxPercentLel) return false;
+
+    out.value1 = percentLel;
     return true;
 }
 
-EP35SWSensor::EP35SWSensor(ModbusContext& ctx, uint8_t address)
+ES35SWSensor::ES35SWSensor(ModbusContext& ctx, uint8_t address)
     : ModbusSensorBase(ctx, address, &g_holdingStrategy, kRegAddress, kRegCount) {}
 
-bool EP35SWSensor::parseRegisters(SensorReading& out) {
+bool ES35SWSensor::parseRegisters(SensorReading& out) {
     int16_t tempRaw = static_cast<int16_t>(node().getResponseBuffer(0));
-    int16_t humRaw = static_cast<int16_t>(node().getResponseBuffer(1));
+    uint16_t humRaw = node().getResponseBuffer(1);
+    float tempC = static_cast<float>(tempRaw) * kTempScale;
+    float humRh = static_cast<float>(humRaw) * kHumScale;
 
-    out.value1 = static_cast<float>(tempRaw) * kTempScale;
-    out.value2 = static_cast<float>(humRaw) * kHumScale;
+    if (tempC < kMinTempC || tempC > kMaxTempC ||
+        humRh < kMinHumRh || humRh > kMaxHumRh) {
+        return false;
+    }
+
+    out.value1 = tempC;
+    out.value2 = humRh;
     return true;
 }
 
@@ -68,7 +90,7 @@ std::unique_ptr<ISensor> SensorFactory::create(SensorType type, uint8_t address,
         case SensorType::Ch4:
             return std::unique_ptr<ISensor>(new EPEnvCH4Sensor(ctx, address));
         case SensorType::TempHum:
-            return std::unique_ptr<ISensor>(new EP35SWSensor(ctx, address));
+            return std::unique_ptr<ISensor>(new ES35SWSensor(ctx, address));
         default:
             return nullptr;
     }

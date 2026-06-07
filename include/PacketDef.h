@@ -28,7 +28,7 @@ struct UplinkDataPacket {
     int16_t  tempX100;   // Temperature x100 (e.g., 2750 = 27.50°C)
     int16_t  humX100;    // Humidity x100 (e.g., 6500 = 65.00%)
     int16_t  co2;        // CO2 ppm
-    int16_t  ch4;        // CH4 ppm
+    int16_t  ch4;        // CH4 %LEL
     uint32_t timestamp;  // Unix epoch (local time)
 };
 #pragma pack(pop)
@@ -131,8 +131,9 @@ const char* const DICTIONARY[] = {
     // 40-49: Actions & Controls
     "start", "stop", "trigger_measure", "stop_measure", "set_state", "set_door", "set_fans", "WakeUp", "MEASURE_STARTED", "ack_rec",
     
-    // 50-59: Sensors
-    "temp", "hum", "ch4", "co", "nh3", "h2", "alc", "c2h5oh", "measuring", "measure_status",
+    // 50-59: Current sensors. Reserved entries preserve legacy token indexes.
+    "temp", "hum", "ch4", "reserved_sensor_53", "reserved_sensor_54", "reserved_sensor_55",
+    "reserved_sensor_56", "reserved_sensor_57", "measuring", "measure_status",
     
     // 60+: NEW KEYS FOR V2 (BẮT BUỘC PHẢI CÓ)
     "transmissionIntervalMinutes", 

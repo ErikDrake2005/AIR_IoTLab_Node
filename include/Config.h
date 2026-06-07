@@ -16,18 +16,15 @@
 #define FANA            27
 #define FAN1            14
 
-#define SHT31_I2C_ADDR  0x44
-#define I2C_SDA_PIN     21
-#define I2C_SCL_PIN     22
-
-#define RS485_BAUD      9600
+#define RS485_BAUD      9600  // All sensors on the shared bus must use 9600 baud
 #define RS485_TX_PIN    26
 #define RS485_RX_PIN    25
 #define PIN_RS485_DE    4
+#define RS485_MIN_REQUEST_INTERVAL_MS 1000UL
 
-#define RS485_ADDR_CO2       1
-#define RS485_ADDR_CH4       2
-#define RS485_ADDR_TEMP_HUM  3
+#define RS485_ADDR_CO2       1  // EP-MED-CO2-01
+#define RS485_ADDR_CH4       2  // EP-ENV-CH4-01
+#define RS485_ADDR_TEMP_HUM  3  // ES35-SW
 
 // ========== SYSTEM ==========
 #define DEVICE_ID       "AIR_VL_01"
